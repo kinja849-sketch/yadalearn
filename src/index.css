@@ -849,3 +849,15 @@ video::-webkit-media-controls-start-playback-button {
   display: none !important;
 }
 
+/* Stream Video SDK Screen Share Sharpness & Object-Fit Contain */
+.str-video__video--screen-share,
+.str-video__speaker-layout__video--screen-share,
+video[data-testid="str-video__video--screen-share"],
+.screen-share-video video {
+  object-fit: contain !important;
+  background-color: #000000 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+

@@ -19,6 +19,7 @@ import { ScanQRModal } from '@/components/ScanQRModal';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { removeImageBackground } from '@/utils/imageProcessor';
+import { fetchGeoLocation } from '@/utils/geo';
 
 interface StudentDashboardProps {
   viewAsStudentId?: string;
@@ -194,21 +195,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   useEffect(() => {
     async function detectGeo() {
       try {
-        const savedGeo = localStorage.getItem('user_geo_loc');
-        let geo = savedGeo ? JSON.parse(savedGeo) : null;
-        
-        if (!geo) {
-          const res = await fetch('https://ipapi.co/json/');
-          if (res.ok) {
-            const data = await res.json();
-            geo = {
-              countryCode: data.country_code || 'US',
-              countryName: data.country_name || 'United States',
-              ip: data.ip || '127.0.0.1'
-            };
-            localStorage.setItem('user_geo_loc', JSON.stringify(geo));
-          }
-        }
+        const geo = await fetchGeoLocation();
 
         if (geo && user?.id) {
           setDetectedCountry(geo.countryCode);

@@ -248,22 +248,16 @@ const CustomResponsiveGridLayout = () => {
 
   return (
     <div
-      className="w-full h-full grid gap-2 sm:gap-3 p-2 sm:p-4 overflow-hidden bg-zinc-950"
+      className="w-full h-full grid gap-2 sm:gap-3 p-2 sm:p-4 overflow-hidden bg-zinc-950 items-stretch justify-stretch"
       style={{
         gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-        alignContent: 'center',
       }}
     >
       {participants.map((participant) => (
         <div
           key={participant.sessionId || participant.userId}
-          className="relative w-full overflow-hidden rounded-2xl bg-[#202124] border border-white/10 shadow-lg"
-          style={{
-            aspectRatio: isPortrait ? '16 / 9' : undefined,
-            maxHeight: '100%',
-            minHeight: 0,
-          }}
+          className="relative w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden rounded-2xl bg-[#202124] border border-white/10 shadow-lg"
         >
           <ParticipantView
             participant={participant}
@@ -273,6 +267,51 @@ const CustomResponsiveGridLayout = () => {
           />
         </div>
       ))}
+    </div>
+  );
+};
+
+// Dedicated Screen Share Main Stage Layout (Full width main stage + participant strip)
+const DedicatedScreenShareLayout = () => {
+  const { useParticipants } = useCallStateHooks();
+  const participants = useParticipants();
+
+  // Screen share participant or fall back to first active participant
+  const screenShareParticipant = participants.find((p) => p.hasScreenShare) || participants[0];
+
+  return (
+    <div className="w-full h-full flex flex-col bg-zinc-950 overflow-hidden relative">
+      {/* Participants Top Strip (single equal strip) */}
+      <div className="w-full shrink-0 bg-black/70 backdrop-blur-md p-2 flex items-center gap-2.5 overflow-x-auto border-b border-white/10 z-10 scrollbar-none">
+        {participants.map((p) => (
+          <div
+            key={p.sessionId || p.userId}
+            className="relative shrink-0 w-28 sm:w-36 h-20 sm:h-24 rounded-xl overflow-hidden bg-[#202124] border border-white/10 shadow-md"
+          >
+            <ParticipantView
+              participant={p}
+              VideoPlaceholder={CustomVideoPlaceholder}
+              ParticipantViewUI={CustomParticipantViewUI}
+              className="w-full h-full object-cover"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Main Screen Share Surface (Bleed Area with Crisp object-fit: contain) */}
+      <div className="flex-1 w-full h-full relative overflow-hidden bg-black flex items-center justify-center p-2">
+        {screenShareParticipant ? (
+          <ParticipantView
+            participant={screenShareParticipant}
+            trackType="screenShareTrack"
+            VideoPlaceholder={CustomVideoPlaceholder}
+            ParticipantViewUI={() => null}
+            className="w-full h-full object-contain screen-share-video"
+          />
+        ) : (
+          <div className="text-zinc-400 text-sm">Screen share loading...</div>
+        )}
+      </div>
     </div>
   );
 };
@@ -467,7 +506,9 @@ const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
     <div className="absolute inset-0 flex flex-col w-full h-full overflow-hidden bg-zinc-950">
       {/* Video Stream Area - Natural Fullscreen Viewport */}
       <div className="flex-1 w-full h-full overflow-hidden p-0 relative">
-        {layout === 'grid' && !hasScreenShare ? (
+        {hasScreenShare ? (
+          <DedicatedScreenShareLayout />
+        ) : layout === 'grid' ? (
           <CustomResponsiveGridLayout />
         ) : (
           <SpeakerLayout participantsBarPosition="top" VideoPlaceholder={CustomVideoPlaceholder} />
@@ -526,16 +567,10 @@ const Meeting = () => {
     if (!id) return;
     const checkClassStatus = async () => {
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-      let query = supabase.from('live_classes').select('status');
-      if (id.startsWith('class-')) {
-        query = query.eq('room_id', id);
-      } else if (isUuid) {
-        query = query.or(`room_id.eq.${id},id.eq.${id}`);
-      } else {
-        query = query.eq('room_id', id);
-      }
+      const query = isUuid
+        ? supabase.from('live_classes').select('status').eq('id', id)
+        : supabase.from('live_classes').select('status').eq('room_id', id);
       const { data } = await query.limit(1);
-
 
       if (data && data.length > 0) {
         const status = data[0].status?.toLowerCase();
@@ -726,17 +761,17 @@ const Meeting = () => {
     const role = user?.role || savedRole;
     const isHost = role === 'teacher';
 
-    // 1. Mark class completed in Supabase (safe try/catch – query builder .catch can fail)
-    try {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id || '');
-      const updateQuery = (id || '').startsWith('class-')
-        ? supabase.from('live_classes').update({ status: 'completed' }).eq('room_id', id)
-        : isUuid
-        ? supabase.from('live_classes').update({ status: 'completed' }).or(`room_id.eq.${id},id.eq.${id}`)
-        : supabase.from('live_classes').update({ status: 'completed' }).eq('room_id', id);
-      await updateQuery;
-    } catch (err) {
-      console.error('Failed to update class status:', err);
+    // 1. Mark class completed in Supabase ONLY IF user is host (teacher)
+    if (isHost && id) {
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        const updateQuery = isUuid
+          ? supabase.from('live_classes').update({ status: 'completed' }).eq('id', id)
+          : supabase.from('live_classes').update({ status: 'completed' }).eq('room_id', id);
+        await updateQuery;
+      } catch (err) {
+        console.error('Failed to update class status:', err);
+      }
     }
 
     // 2. End or leave the Stream call
