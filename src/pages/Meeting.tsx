@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   StreamCall, 
   StreamTheme, 
   SpeakerLayout, 
   PaginatedGridLayout, 
-  CallControls, 
   useCallStateHooks,
   useCall,
   Call,
@@ -138,14 +137,21 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
 
         {/* Top-Right Mute Status Badge */}
         {isMuted && (
-          <div className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full bg-black/65 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-lg pointer-events-none">
-            <span className="material-symbols-outlined text-sm">mic_off</span>
+          <div className="absolute top-2.5 right-2.5 z-20 w-6 h-6 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-md pointer-events-none">
+            <span className="material-symbols-outlined text-xs">mic_off</span>
           </div>
         )}
 
+        {/* Thin Bottom Bar Name Overlay */}
+        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent pt-3 pb-2 px-3 flex items-center justify-between pointer-events-none">
+          <span className="text-white font-medium text-xs truncate max-w-[85%] drop-shadow-sm">
+            {displayName}
+          </span>
+        </div>
+
         {/* Active Speaking Highlight Glow Box */}
         {participant.isSpeaking && (
-          <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 z-30 pointer-events-none shadow-[0_0_15px_rgba(59,130,246,0.6)] animate-pulse" />
+          <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 z-30 pointer-events-none shadow-[0_0_12px_rgba(59,130,246,0.6)]" />
         )}
       </div>
     );
@@ -153,7 +159,7 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
 );
 CustomVideoPlaceholder.displayName = 'CustomVideoPlaceholder';
 
-// Custom Participant UI overlay for live video feed
+// Custom Participant UI overlay for live video feed (Thin bottom bar name tag)
 const CustomParticipantViewUI = ({ participant: propParticipant }: { participant?: StreamParticipant }) => {
   const context = useParticipantViewContext();
   const participant = propParticipant || context?.participant;
@@ -166,127 +172,51 @@ const CustomParticipantViewUI = ({ participant: propParticipant }: { participant
     <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-2xl">
       {/* Top-Right Mute Badge */}
       {isMuted && (
-        <div className="absolute top-3 right-3 w-7 h-7 rounded-full bg-black/65 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-lg">
-          <span className="material-symbols-outlined text-sm">mic_off</span>
+        <div className="absolute top-2.5 right-2.5 w-6 h-6 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-md">
+          <span className="material-symbols-outlined text-xs">mic_off</span>
         </div>
       )}
 
-      {/* Bottom-Left Name Overlay Pill */}
-      <div className="absolute bottom-3 left-3 bg-black/65 backdrop-blur-md px-3 py-1 rounded-lg border border-white/10 shadow-md">
-        <span className="text-white font-medium text-xs truncate max-w-[180px] block">
+      {/* Thin Bottom Bar Name Overlay */}
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent pt-3 pb-2 px-3 flex items-center justify-between">
+        <span className="text-white font-medium text-xs truncate max-w-[85%] drop-shadow-sm">
           {participant.name || 'User'}
         </span>
       </div>
 
       {/* Active Speaking Indicator Ring */}
       {participant.isSpeaking && (
-        <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 pointer-events-none shadow-[0_0_15px_rgba(59,130,246,0.6)] animate-pulse" />
+        <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 pointer-events-none shadow-[0_0_12px_rgba(59,130,246,0.6)]" />
       )}
     </div>
   );
 };
 
-// Dynamic Participant Grid Layout — Meet-style equal tiles, responsive to orientation
-const CustomResponsiveGridLayout = () => {
+// Responsive Meet/Zoom Style Equal Gallery Grid (No Screen Share)
+const ResponsiveGalleryGrid = () => {
   const { useParticipants } = useCallStateHooks();
   const participants = useParticipants();
-
-  // Detect portrait vs landscape orientation reactively
-  const [isPortrait, setIsPortrait] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return window.matchMedia('(orientation: portrait)').matches;
-    }
-    return false;
-  });
-
-  useEffect(() => {
-    const mql = window.matchMedia('(orientation: portrait)');
-    const handler = (e: MediaQueryListEvent) => setIsPortrait(e.matches);
-    mql.addEventListener('change', handler);
-    return () => mql.removeEventListener('change', handler);
-  }, []);
-
   const count = participants.length;
 
-  // Calculate columns and rows based on participant count AND orientation
-  let cols = 1;
-  let rows = 1;
-
-  if (count <= 1) {
-    cols = 1;
-    rows = 1;
-  } else if (count === 2) {
-    // Portrait: stack vertically (1 col, 2 rows) — Meet-style
-    // Landscape: side by side (2 cols, 1 row)
-    cols = isPortrait ? 1 : 2;
-    rows = isPortrait ? 2 : 1;
-  } else if (count <= 4) {
-    cols = 2;
-    rows = 2;
-  } else if (count <= 6) {
-    cols = isPortrait ? 2 : 3;
-    rows = isPortrait ? 3 : 2;
-  } else if (count <= 9) {
-    cols = 3;
-    rows = 3;
-  } else if (count <= 12) {
-    cols = isPortrait ? 3 : 4;
-    rows = isPortrait ? 4 : 3;
-  } else if (count <= 16) {
-    cols = 4;
-    rows = 4;
-  } else if (count <= 20) {
-    cols = isPortrait ? 4 : 5;
-    rows = isPortrait ? 5 : 4;
-  } else if (count <= 24) {
-    cols = isPortrait ? 4 : 6;
-    rows = isPortrait ? 6 : 4;
-  } else {
-    cols = isPortrait ? 4 : 6;
-    rows = Math.ceil(count / cols);
+  // Determine grid columns dynamically based on participant count
+  let gridColsClass = 'grid-cols-1';
+  if (count === 2) {
+    gridColsClass = 'grid-cols-1 sm:grid-cols-2';
+  } else if (count >= 3 && count <= 4) {
+    gridColsClass = 'grid-cols-2';
+  } else if (count >= 5 && count <= 9) {
+    gridColsClass = 'grid-cols-2 sm:grid-cols-3';
+  } else if (count > 9) {
+    gridColsClass = 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4';
   }
 
   return (
-    <div
-      className="w-full h-full grid gap-2 sm:gap-3 p-2 sm:p-4 overflow-hidden bg-zinc-950 items-stretch justify-stretch"
-      style={{
-        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-      }}
-    >
-      {participants.map((participant) => (
-        <div
-          key={participant.sessionId || participant.userId}
-          className="relative w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden rounded-2xl bg-[#202124] border border-white/10 shadow-lg"
-        >
-          <ParticipantView
-            participant={participant}
-            VideoPlaceholder={CustomVideoPlaceholder}
-            ParticipantViewUI={CustomParticipantViewUI}
-            className="w-full h-full object-cover"
-          />
-        </div>
-      ))}
-    </div>
-  );
-};
-
-// Dedicated Screen Share Main Stage Layout (Full width main stage + participant strip)
-const DedicatedScreenShareLayout = () => {
-  const { useParticipants } = useCallStateHooks();
-  const participants = useParticipants();
-
-  // Screen share participant or fall back to first active participant
-  const screenShareParticipant = participants.find((p) => p.hasScreenShare) || participants[0];
-
-  return (
-    <div className="w-full h-full flex flex-col bg-zinc-950 overflow-hidden relative">
-      {/* Participants Top Strip (single equal strip) */}
-      <div className="w-full shrink-0 bg-black/70 backdrop-blur-md p-2 flex items-center gap-2.5 overflow-x-auto border-b border-white/10 z-10 scrollbar-none">
+    <div className="w-full h-full min-h-0 flex items-center justify-center p-2 sm:p-3 overflow-hidden bg-zinc-950">
+      <div className={`w-full h-full max-h-full grid ${gridColsClass} auto-rows-fr gap-2 sm:gap-3 items-stretch justify-items-stretch`}>
         {participants.map((p) => (
           <div
             key={p.sessionId || p.userId}
-            className="relative shrink-0 w-28 sm:w-36 h-20 sm:h-24 rounded-xl overflow-hidden bg-[#202124] border border-white/10 shadow-md"
+            className="relative w-full h-full min-h-0 rounded-2xl overflow-hidden bg-[#202124] border border-white/10 shadow-lg flex items-center justify-center"
           >
             <ParticipantView
               participant={p}
@@ -297,9 +227,22 @@ const DedicatedScreenShareLayout = () => {
           </div>
         ))}
       </div>
+    </div>
+  );
+};
 
-      {/* Main Screen Share Surface (Bleed Area with Crisp object-fit: contain) */}
-      <div className="flex-1 w-full h-full relative overflow-hidden bg-black flex items-center justify-center p-2">
+// Dedicated Screen Share Main Stage Layout (Screen share on left stage + equal participant grid column on right)
+const DedicatedScreenShareLayout = () => {
+  const { useParticipants } = useCallStateHooks();
+  const participants = useParticipants();
+
+  // Screen share participant or fall back to first participant
+  const screenShareParticipant = participants.find((p) => p.hasScreenShare) || participants[0];
+
+  return (
+    <div className="w-full h-full min-h-0 flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 bg-zinc-950 overflow-hidden relative">
+      {/* Main Screen Share Stage (Dominant surface on left/top) */}
+      <div className="flex-1 min-w-0 min-h-0 w-full h-full relative overflow-hidden bg-black rounded-2xl flex items-center justify-center p-2 border border-white/10">
         {screenShareParticipant ? (
           <ParticipantView
             participant={screenShareParticipant}
@@ -312,13 +255,50 @@ const DedicatedScreenShareLayout = () => {
           <div className="text-zinc-400 text-sm">Screen share loading...</div>
         )}
       </div>
+
+      {/* Participants Side Column on Desktop (or Bottom Strip on Mobile) */}
+      <div className="w-full md:w-72 lg:w-80 shrink-0 h-28 md:h-full min-h-0 bg-zinc-900/80 backdrop-blur-md p-2 rounded-2xl border border-white/10 flex flex-col overflow-hidden z-20">
+        {/* On Desktop (md:), layout as vertical equal grid column. On Mobile (<md), horizontal scroll row */}
+        <div className="hidden md:grid grid-cols-1 auto-rows-fr gap-2 w-full h-full min-h-0 overflow-y-auto scrollbar-none">
+          {participants.map((p) => (
+            <div
+              key={p.sessionId || p.userId}
+              className="relative w-full h-full min-h-[100px] rounded-xl overflow-hidden bg-[#202124] border border-white/15 shadow-md flex items-center justify-center"
+            >
+              <ParticipantView
+                participant={p}
+                VideoPlaceholder={CustomVideoPlaceholder}
+                ParticipantViewUI={CustomParticipantViewUI}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Mobile (<md) horizontal strip fallback */}
+        <div className="flex md:hidden items-center justify-start gap-2.5 overflow-x-auto h-full w-full scrollbar-none">
+          {participants.map((p) => (
+            <div
+              key={p.sessionId || p.userId}
+              className="relative shrink-0 w-32 h-full rounded-xl overflow-hidden bg-[#202124] border border-white/15 shadow-md"
+            >
+              <ParticipantView
+                participant={p}
+                VideoPlaceholder={CustomVideoPlaceholder}
+                ParticipantViewUI={CustomParticipantViewUI}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
 
-// Teacher Host & Moderator Controls Panel (Stream SDK powered)
-const TeacherModeratorPanel = ({ onClose }: { onClose: () => void }) => {
-  const { useParticipants, useCall } = useCallStateHooks();
+// Host & Moderator Controls Panel (Stream SDK powered disciplinary controls)
+const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: () => void }) => {
+  const { useParticipants } = useCallStateHooks();
   const participants = useParticipants();
   const call = useCall();
   const { user } = useAuth();
@@ -348,11 +328,6 @@ const TeacherModeratorPanel = ({ onClose }: { onClose: () => void }) => {
         await call.removeMembers([userId]);
       } catch (e) {
         console.error('Failed to remove participant:', e);
-        try {
-          await call.blockUser(userId);
-        } catch (err) {
-          console.error('Failed to block user:', err);
-        }
       }
     }
   };
@@ -389,93 +364,280 @@ const TeacherModeratorPanel = ({ onClose }: { onClose: () => void }) => {
     }
   };
 
-  const studentParticipants = participants.filter(p => p.userId !== user?.id);
+  const otherParticipants = participants.filter(p => p.userId !== user?.id);
 
   return (
     <div className="absolute top-20 right-6 w-80 sm:w-96 bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl z-50 overflow-hidden text-white animate-in slide-in-from-top-4">
       <div className="bg-purple-950/60 p-4 border-b border-white/10 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-purple-400 text-xl">admin_panel_settings</span>
-          <h3 className="font-bold text-sm">Host Controls ({studentParticipants.length})</h3>
+          <span className="material-symbols-outlined text-purple-400 text-xl">
+            {isHost ? 'admin_panel_settings' : 'group'}
+          </span>
+          <h3 className="font-bold text-sm">
+            {isHost ? `Host Controls (${participants.length})` : `Classroom Participants (${participants.length})`}
+          </h3>
         </div>
         <button onClick={onClose} className="p-1 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
           <span className="material-symbols-outlined text-base">close</span>
         </button>
       </div>
 
-      <div className="p-3 border-b border-white/5 flex gap-2">
-        <button
-          onClick={handleMuteAllAudio}
-          className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
-        >
-          <span className="material-symbols-outlined text-sm">mic_off</span>
-          Mute Audio
-        </button>
-        <button
-          onClick={handleMuteAllVideo}
-          className="flex-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
-        >
-          <span className="material-symbols-outlined text-sm">videocam_off</span>
-          Mute Video
-        </button>
-      </div>
+      {isHost && (
+        <div className="p-3 border-b border-white/5 flex gap-2">
+          <button
+            onClick={handleMuteAllAudio}
+            className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-sm">mic_off</span>
+            Mute All Audio
+          </button>
+          <button
+            onClick={handleMuteAllVideo}
+            className="flex-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-sm">videocam_off</span>
+            Mute All Video
+          </button>
+        </div>
+      )}
 
       <div className="max-h-[50vh] overflow-y-auto p-2 space-y-1">
-        {studentParticipants.length === 0 ? (
+        {participants.length === 0 ? (
           <p className="text-xs text-zinc-400 text-center py-6">No active participants connected.</p>
         ) : (
-          studentParticipants.map(p => (
-            <div key={p.userId} className="flex items-center justify-between p-2.5 rounded-2xl bg-zinc-800/40 hover:bg-zinc-800/80 transition-colors border border-white/5">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-xs font-bold shrink-0">
-                  {(p.name || 'S')[0].toUpperCase()}
+          participants.map(p => {
+            const isSelf = p.userId === user?.id;
+            return (
+              <div key={p.userId} className="flex items-center justify-between p-2.5 rounded-2xl bg-zinc-800/40 hover:bg-zinc-800/80 transition-colors border border-white/5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-xs font-bold shrink-0">
+                    {(p.name || 'U')[0].toUpperCase()}
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-bold truncate max-w-[120px]">
+                      {p.name || 'User'} {isSelf && '(You)'}
+                    </span>
+                    <span className="text-[10px] text-zinc-400">
+                      {p.role === 'host' ? 'Host' : 'Participant'}
+                    </span>
+                  </div>
                 </div>
-                <span className="text-xs font-bold truncate max-w-[100px]">{p.name || 'Student'}</span>
+
+                <div className="flex items-center gap-1">
+                  {/* Pin / Spotlight button */}
+                  <button
+                    onClick={() => handlePinParticipant(p.userId)}
+                    title={p.isPinned ? "Unpin" : "Pin Spotlight"}
+                    className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isPinned ? 'bg-purple-600 text-white' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
+                  >
+                    <span className="material-symbols-outlined text-base">push_pin</span>
+                  </button>
+
+                  {/* Mute Audio */}
+                  {isHost && !isSelf && (
+                    <button
+                      onClick={() => handleMuteAudio(p.userId)}
+                      title="Mute Audio"
+                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
+                    >
+                      <span className="material-symbols-outlined text-base">{p.isMuted ? 'mic_off' : 'mic'}</span>
+                    </button>
+                  )}
+
+                  {/* Mute Video */}
+                  {isHost && !isSelf && (
+                    <button
+                      onClick={() => handleMuteVideo(p.userId)}
+                      title="Mute Video"
+                      className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-bold transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-base">videocam_off</span>
+                    </button>
+                  )}
+
+                  {/* Kick / Remove Member */}
+                  {isHost && !isSelf && (
+                    <button
+                      onClick={() => handleKickParticipant(p.userId)}
+                      title="Remove Participant"
+                      className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-base">person_remove</span>
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => handlePinParticipant(p.userId)}
-                  title={p.isPinned ? "Unpin" : "Pin Spotlight"}
-                  className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isPinned ? 'bg-purple-600 text-white' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
-                >
-                  <span className="material-symbols-outlined text-base">push_pin</span>
-                </button>
-                <button
-                  onClick={() => handleMuteAudio(p.userId)}
-                  title="Mute Audio"
-                  className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
-                >
-                  <span className="material-symbols-outlined text-base">{p.isMuted ? 'mic_off' : 'mic'}</span>
-                </button>
-                <button
-                  onClick={() => handleMuteVideo(p.userId)}
-                  title="Mute Video"
-                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-bold transition-colors"
-                >
-                  <span className="material-symbols-outlined text-base">videocam_off</span>
-                </button>
-                <button
-                  onClick={() => handleKickParticipant(p.userId)}
-                  title="Remove Participant"
-                  className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold transition-colors"
-                >
-                  <span className="material-symbols-outlined text-base">person_remove</span>
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
   );
 };
 
-// Internal Layout switcher component (Grid View vs Speaker View)
+// Single Unified Floating Control Bar (Only ONE bar rendered for the whole call)
+const SingleControlBar = ({
+  layout,
+  onToggleLayout,
+  onToggleModPanel,
+  showModPanel,
+  onLeave,
+  isHost
+}: {
+  layout: 'grid' | 'speaker';
+  onToggleLayout: () => void;
+  onToggleModPanel: () => void;
+  showModPanel: boolean;
+  onLeave: () => void;
+  isHost: boolean;
+}) => {
+  const call = useCall();
+  const { useMicrophoneState, useCameraState, useScreenShareState, useParticipants } = useCallStateHooks();
+  const { isMute: isMicMuted } = useMicrophoneState();
+  const { isMute: isCamMuted } = useCameraState();
+  const { isMute: isScreenShareMuted } = useScreenShareState();
+  const participants = useParticipants();
+
+  const isSharing = !isScreenShareMuted;
+
+  const toggleMic = async () => {
+    try {
+      await call?.microphone.toggle();
+    } catch (e) {
+      console.error('Mic toggle error:', e);
+    }
+  };
+
+  const toggleCam = async () => {
+    try {
+      await call?.camera.toggle();
+    } catch (e) {
+      console.error('Cam toggle error:', e);
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    try {
+      await call?.screenShare.toggle();
+    } catch (e) {
+      console.error('Screen share toggle error:', e);
+    }
+  };
+
+  return (
+    <div className="bg-zinc-900/90 backdrop-blur-xl border border-white/15 rounded-full px-4 sm:px-5 py-2.5 flex items-center gap-2 sm:gap-3 shadow-2xl pointer-events-auto">
+      {/* Mute/Unmute Mic */}
+      <button
+        onClick={toggleMic}
+        title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
+        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
+          isMicMuted
+            ? 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-600/30'
+            : 'bg-white/10 hover:bg-white/20 text-white'
+        }`}
+      >
+        <span className="material-symbols-outlined text-xl">
+          {isMicMuted ? 'mic_off' : 'mic'}
+        </span>
+      </button>
+
+      {/* Camera On/Off */}
+      <button
+        onClick={toggleCam}
+        title={isCamMuted ? "Turn On Camera" : "Turn Off Camera"}
+        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
+          isCamMuted
+            ? 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-600/30'
+            : 'bg-white/10 hover:bg-white/20 text-white'
+        }`}
+      >
+        <span className="material-symbols-outlined text-xl">
+          {isCamMuted ? 'videocam_off' : 'videocam'}
+        </span>
+      </button>
+
+      {/* SINGLE Screen Share Button (ONLY ONE control rendered) */}
+      <button
+        onClick={toggleScreenShare}
+        title={isSharing ? "Stop Screen Share" : "Share Screen"}
+        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
+          isSharing
+            ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-600/30 animate-pulse'
+            : 'bg-white/10 hover:bg-white/20 text-white'
+        }`}
+      >
+        <span className="material-symbols-outlined text-xl">
+          {isSharing ? 'cancel_presentation' : 'present_to_all'}
+        </span>
+      </button>
+
+      <div className="w-[1px] h-6 bg-white/20 my-auto" />
+
+      {/* Layout Switcher */}
+      <button
+        onClick={onToggleLayout}
+        title={layout === 'grid' ? "Switch to Speaker View" : "Switch to Grid View"}
+        className="p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all duration-200 flex items-center justify-center"
+      >
+        <span className="material-symbols-outlined text-xl">
+          {layout === 'grid' ? 'grid_view' : 'featured_video'}
+        </span>
+      </button>
+
+      {/* Host / Participants Panel Toggle */}
+      <button
+        onClick={onToggleModPanel}
+        title={isHost ? "Host Controls" : "Classroom Participants"}
+        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center relative ${
+          showModPanel
+            ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-600/30'
+            : 'bg-white/10 hover:bg-white/20 text-white'
+        }`}
+      >
+        <span className="material-symbols-outlined text-xl">
+          {isHost ? 'admin_panel_settings' : 'group'}
+        </span>
+        {participants.length > 0 && (
+          <span className="absolute -top-1 -right-1 bg-purple-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-zinc-900">
+            {participants.length}
+          </span>
+        )}
+      </button>
+
+      <div className="w-[1px] h-6 bg-white/20 my-auto" />
+
+      {/* Leave / End Class Button */}
+      {isHost ? (
+        <button
+          onClick={onLeave}
+          title="End Class for Everyone"
+          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-full font-bold text-xs sm:text-sm flex items-center gap-1.5 shadow-lg shadow-red-600/30 transition-all active:scale-95 shrink-0"
+        >
+          <span className="material-symbols-outlined text-lg">call_end</span>
+          <span className="hidden sm:inline">End Class for Everyone</span>
+          <span className="sm:hidden">End</span>
+        </button>
+      ) : (
+        <button
+          onClick={onLeave}
+          title="Leave Class"
+          className="bg-red-600/80 hover:bg-red-600 text-white p-3 rounded-full transition-all duration-200 flex items-center justify-center shadow-lg shadow-red-600/20 active:scale-95"
+        >
+          <span className="material-symbols-outlined text-xl">call_end</span>
+        </button>
+      )}
+    </div>
+  );
+};
+
+// Call Layout Container (Grid vs Speaker vs Active Screen Share stage)
 const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
   const [layout, setLayout] = useState<'grid' | 'speaker'>('grid');
   const [showModPanel, setShowModPanel] = useState(false);
   const { user } = useAuth();
   const role = user?.role || localStorage.getItem('yadalearn-user-role');
+  const isHost = role === 'teacher';
+
   const { useHasOngoingScreenShare } = useCallStateHooks();
   const hasScreenShare = useHasOngoingScreenShare();
   const call = useCall();
@@ -495,52 +657,41 @@ const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
     }
   }, [call]);
 
-  // Automatically switch to speaker layout when screen sharing is active
-  useEffect(() => {
-    if (hasScreenShare) {
-      setLayout('speaker');
-    }
-  }, [hasScreenShare]);
-
   return (
-    <div className="absolute inset-0 flex flex-col w-full h-full overflow-hidden bg-zinc-950">
+    <div className="w-full h-full min-h-0 flex flex-col bg-zinc-950 overflow-hidden relative">
       {/* Video Stream Area - Natural Fullscreen Viewport */}
-      <div className="flex-1 w-full h-full overflow-hidden p-0 relative">
+      <div className="flex-1 min-h-0 w-full overflow-hidden p-1 sm:p-2 relative flex flex-col">
         {hasScreenShare ? (
           <DedicatedScreenShareLayout />
         ) : layout === 'grid' ? (
-          <CustomResponsiveGridLayout />
+          <ResponsiveGalleryGrid />
         ) : (
-          <SpeakerLayout participantsBarPosition="top" VideoPlaceholder={CustomVideoPlaceholder} />
+          <SpeakerLayout
+            participantsBarPosition="bottom"
+            VideoPlaceholder={CustomVideoPlaceholder}
+            ParticipantViewUI={CustomParticipantViewUI}
+          />
         )}
       </div>
 
-      {/* Host Controls Trigger for Teacher */}
-      {role === 'teacher' && (
-        <button
-          onClick={() => setShowModPanel(!showModPanel)}
-          className="absolute top-4 right-4 z-50 bg-purple-600/90 hover:bg-purple-600 text-white backdrop-blur-md px-4 py-2 rounded-full font-bold text-xs flex items-center gap-2 shadow-2xl border border-purple-400/30 transition-all active:scale-95 pointer-events-auto"
-        >
-          <span className="material-symbols-outlined text-base">admin_panel_settings</span>
-          Host Controls
-        </button>
+      {/* Host / Participant Controls Drawer Panel */}
+      {showModPanel && (
+        <TeacherModeratorPanel
+          isHost={isHost}
+          onClose={() => setShowModPanel(false)}
+        />
       )}
 
-      {showModPanel && <TeacherModeratorPanel onClose={() => setShowModPanel(false)} />}
-
-      {/* Floating Control Bar Overlay */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/85 backdrop-blur-2xl rounded-full px-5 py-2.5 flex items-center gap-3 z-50 shadow-2xl border border-white/15 pointer-events-auto">
-        <button
-          onClick={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
-          title={layout === 'grid' ? "Switch to Speaker View" : "Switch to Grid View"}
-          className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all duration-200 flex items-center justify-center"
-        >
-          <span className="material-symbols-outlined text-xl">
-            {layout === 'grid' ? 'grid_view' : 'featured_video'}
-          </span>
-        </button>
-        <div className="w-[1px] h-6 bg-white/20" />
-        <CallControls onLeave={handleLeave} />
+      {/* Control Bar Reserved Container */}
+      <div className="w-full shrink-0 py-3 px-4 bg-zinc-950/95 backdrop-blur-xl border-t border-white/10 flex items-center justify-center z-30 pointer-events-auto">
+        <SingleControlBar
+          layout={layout}
+          onToggleLayout={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
+          onToggleModPanel={() => setShowModPanel(prev => !prev)}
+          showModPanel={showModPanel}
+          onLeave={handleLeave}
+          isHost={isHost}
+        />
       </div>
     </div>
   );
@@ -553,7 +704,7 @@ const Meeting = () => {
   const { user, endSession } = useAuth();
   const [call, setCall] = useState<Call | null>(null);
   const [error, setError] = useState('');
-  const alreadyLeftRef = React.useRef(false);
+  const alreadyLeftRef = useRef(false);
 
   const [isWaiting, setIsWaiting] = useState(() => {
     const role = user?.role || localStorage.getItem('yadalearn-user-role');
@@ -562,7 +713,8 @@ const Meeting = () => {
   const [waitingStudents, setWaitingStudents] = useState<
     { id: string; name: string; avatar?: string }[]
   >([]);
-  // Verify if session has already ended
+
+  // Verify if session has already ended before joining
   useEffect(() => {
     if (!id) return;
     const checkClassStatus = async () => {
@@ -606,7 +758,7 @@ const Meeting = () => {
       }
     });
 
-    // Listen for host ending the session – students auto-leave
+    // Listen for host ending the session – students auto-leave and navigate to rate teacher
     channel.on('broadcast', { event: 'session-ended' }, () => {
       if (role === 'student') {
         alreadyLeftRef.current = true;
@@ -647,6 +799,7 @@ const Meeting = () => {
     };
   }, [id, user, isWaiting]);
 
+  // Join Stream Call & set host capabilities
   useEffect(() => {
     if (!client || !isStreamReady || !id || isWaiting) return;
 
@@ -753,7 +906,7 @@ const Meeting = () => {
   };
 
   const handleLeave = async () => {
-    // Prevent double-leave (Stream CallControls already calls leave before onLeave fires)
+    // Prevent double-leave (guarded against duplicate execution)
     if (alreadyLeftRef.current) return;
     alreadyLeftRef.current = true;
 
@@ -765,12 +918,13 @@ const Meeting = () => {
     if (isHost && id) {
       try {
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-        const updateQuery = isUuid
-          ? supabase.from('live_classes').update({ status: 'completed' }).eq('id', id)
-          : supabase.from('live_classes').update({ status: 'completed' }).eq('room_id', id);
-        await updateQuery;
+        if (isUuid) {
+          await supabase.from('live_classes').update({ status: 'completed' }).eq('id', id);
+        } else {
+          await supabase.from('live_classes').update({ status: 'completed' }).eq('room_id', id);
+        }
       } catch (err) {
-        console.error('Failed to update class status:', err);
+        console.error('Failed to update live_classes status:', err);
       }
     }
 
@@ -786,7 +940,7 @@ const Meeting = () => {
         }
       } catch (err: any) {
         // "already been left" or "already ended" is safe to ignore
-        console.warn('Leave/end call:', err?.message);
+        console.warn('Leave/end call error (safe to ignore):', err?.message);
       }
     }
 
@@ -881,30 +1035,29 @@ const Meeting = () => {
 
   return (
     <div className="fixed inset-0 w-screen h-[100dvh] bg-zinc-950 flex flex-col z-[100] overflow-hidden">
-      {/* Top Bar */}
-      <div className="absolute top-0 w-full z-40 bg-gradient-to-b from-black/80 to-transparent p-4 md:p-6 shrink-0 transition-opacity pointer-events-auto">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={handleLeave}
-              className="flex size-10 items-center justify-center rounded-full hover:bg-zinc-800 text-white transition-colors"
-            >
-              <span className="material-symbols-outlined">arrow_back</span>
-            </button>
-            <div>
-              <h2 className="text-lg font-bold text-white leading-tight">Live Classroom</h2>
-              <p className="text-xs text-green-400 font-medium flex items-center gap-1">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                </span>
-                Live Grid Stream
-              </p>
-            </div>
+      {/* Top Header Bar */}
+      <div className="relative w-full z-40 bg-zinc-950/90 backdrop-blur-md px-4 py-3 md:px-6 md:py-4 shrink-0 border-b border-white/10 flex items-center justify-between pointer-events-auto shadow-md">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={handleLeave}
+            className="flex size-10 items-center justify-center rounded-full hover:bg-zinc-800 text-white transition-colors"
+          >
+            <span className="material-symbols-outlined">arrow_back</span>
+          </button>
+          <div>
+            <h2 className="text-lg font-bold text-white leading-tight">Live Classroom</h2>
+            <p className="text-xs text-green-400 font-medium flex items-center gap-1">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              Live Stream
+            </p>
           </div>
         </div>
       </div>
 
+      {/* Waiting Room Host Notification Panel */}
       {role === 'teacher' && waitingStudents.length > 0 && (
         <div className="absolute top-20 right-6 w-80 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-[50vh]">
           <div className="bg-purple-900/30 p-3 border-b border-zinc-800 flex justify-between items-center">
@@ -929,18 +1082,16 @@ const Meeting = () => {
         </div>
       )}
 
-      {/* Video Stream Area */}
-      <div className="flex-1 w-full h-full relative">
-        <div className="absolute inset-0 bg-zinc-950 overflow-hidden">
-          <StreamCall call={call}>
-            <StreamTheme className="h-full w-full custom-stream-theme">
-              <CallLayout handleLeave={handleLeave} />
-            </StreamTheme>
-          </StreamCall>
-        </div>
+      {/* Video Stream Stage Area */}
+      <div className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden bg-zinc-950">
+        <StreamCall call={call}>
+          <StreamTheme className="h-full w-full custom-stream-theme flex flex-col min-h-0">
+            <CallLayout handleLeave={handleLeave} />
+          </StreamTheme>
+        </StreamCall>
       </div>
 
-      {/* Custom CSS overrides for uncompressed full-viewport video & screen share */}
+      {/* Custom CSS overrides for continuous equal grid, sharp screen share, & theme resets */}
       <style>{`
         .custom-stream-theme {
           --str-video-bg: #09090b;
@@ -949,54 +1100,50 @@ const Meeting = () => {
           height: 100% !important;
           display: flex !important;
           flex-direction: column !important;
+          min-height: 0 !important;
         }
 
-        /* Prevent Stream SDK from forcing aspect ratios or max heights that compress the layout */
+        /* Equal Continuous Grid layout resets */
         .str-video__paginated-grid-layout,
         .str-video__grid-layout {
           display: flex !important;
           flex-direction: column !important;
           width: 100% !important;
           height: 100% !important;
+          min-height: 0 !important;
           padding: 8px !important;
           box-sizing: border-box !important;
           background: #09090b !important;
           overflow: hidden !important;
-          flex: 1 !important;
+          flex: 1 1 0% !important;
         }
 
         .str-video__paginated-grid-layout__group,
         .str-video__grid-layout__wrapper {
-          display: flex !important;
-          flex-direction: row !important;
-          flex-wrap: wrap !important;
+          display: grid !important;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important;
+          grid-auto-rows: 1fr !important;
           width: 100% !important;
           height: 100% !important;
-          flex: 1 !important;
-          gap: 8px !important;
+          min-height: 0 !important;
+          flex: 1 1 0% !important;
+          gap: 10px !important;
           align-items: stretch !important;
-          justify-content: center !important;
+          justify-items: stretch !important;
         }
 
-        /* Participant view tiles — equal cells, not forced full-height */
+        /* Participant view tiles — equal cells in continuous grid */
         .str-video__paginated-grid-layout__group > .str-video__participant-view,
         .str-video__paginated-grid-layout__group > div,
         .str-video__grid-layout__wrapper > .str-video__participant-view {
-          flex: 1 1 auto !important;
+          width: 100% !important;
+          height: 100% !important;
           min-height: 0 !important;
           max-height: 100% !important;
           aspect-ratio: unset !important;
         }
 
-        .str-video__paginated-grid-layout__group > .str-video__participant-view:only-child,
-        .str-video__paginated-grid-layout__group > div:only-child,
-        .str-video__grid-layout__wrapper > .str-video__participant-view:only-child {
-          flex: 1 1 100% !important;
-          width: 100% !important;
-          max-height: 100% !important;
-        }
-
-        /* Speaker Layout overrides to fill 100% viewport & sharp rendering */
+        /* Speaker Layout overrides */
         .str-video__speaker-layout__wrapper {
           flex: 1 1 0% !important;
           width: 100% !important;
@@ -1022,11 +1169,6 @@ const Meeting = () => {
           overflow: hidden !important;
         }
 
-        .str-video__speaker-layout--variant-top {
-          flex-direction: column-reverse !important;
-        }
-
-        /* Main surface / Spotlight displaying screen-share or main video */
         .str-video__speaker-layout__spotlight {
           width: 100% !important;
           height: 100% !important;
@@ -1056,53 +1198,34 @@ const Meeting = () => {
           position: relative !important;
         }
 
-        /* Participants Bar in Speaker View / Screen Share */
-        .str-video__speaker-layout__participants-bar-buttons-wrapper {
-          width: 100% !important;
-          max-width: 100% !important;
-          display: flex !important;
-          justify-content: center !important;
-          align-items: center !important;
-          flex-shrink: 0 !important;
-          z-index: 30 !important;
-          padding: 4px 0 !important;
-        }
-
-        .str-video__speaker-layout__participants-bar-wrapper {
-          width: 100% !important;
-          max-width: 100% !important;
-          overflow-x: auto !important;
-          overflow-y: hidden !important;
-          scrollbar-width: none !important;
-          padding: 4px 8px !important;
-        }
-
         .str-video__participants-bar,
         .str-video__speaker-layout__participants-bar {
           display: flex !important;
           flex-direction: row !important;
           gap: 10px !important;
-          padding: 4px 8px !important;
+          padding: 6px 12px !important;
           align-items: center !important;
           justify-content: center !important;
-          width: auto !important;
-          min-width: 100% !important;
-          max-height: 125px !important;
-          background: rgba(9, 9, 11, 0.75) !important;
+          width: 100% !important;
+          shrink: 0 !important;
+          max-height: 115px !important;
+          min-height: 0 !important;
+          background: rgba(9, 9, 11, 0.85) !important;
           backdrop-filter: blur(12px) !important;
           border-radius: 1rem !important;
           border: 1px solid rgba(255, 255, 255, 0.1) !important;
+          overflow-x: auto !important;
         }
 
-        /* Equal cell sizing for participant tiles in bar */
+        /* Equal thumbnail cell sizing */
         .str-video__speaker-layout__participant-tile {
-          width: 170px !important;
-          min-width: 170px !important;
-          max-width: 170px !important;
-          height: 105px !important;
-          min-height: 105px !important;
-          max-height: 105px !important;
-          flex: 0 0 170px !important;
+          width: 150px !important;
+          min-width: 150px !important;
+          max-width: 150px !important;
+          height: 95px !important;
+          min-height: 95px !important;
+          max-height: 95px !important;
+          flex: 0 0 150px !important;
           padding: 0 !important;
           margin: 0 !important;
           box-sizing: border-box !important;
@@ -1110,23 +1233,6 @@ const Meeting = () => {
           overflow: hidden !important;
           border: 1px solid rgba(255, 255, 255, 0.15) !important;
           background-color: #202124 !important;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
-        }
-
-        .str-video__participants-bar .str-video__participant-view,
-        .str-video__speaker-layout__participants-bar .str-video__participant-view,
-        .str-video__speaker-layout__participant-tile .str-video__participant-view {
-          width: 100% !important;
-          height: 100% !important;
-          min-width: 100% !important;
-          max-width: 100% !important;
-          min-height: 100% !important;
-          max-height: 100% !important;
-          flex-shrink: 0 !important;
-          border-radius: 0.85rem !important;
-          overflow: hidden !important;
-          border: none !important;
-          aspect-ratio: unset !important;
         }
 
         /* General Participant View resets */
@@ -1140,8 +1246,6 @@ const Meeting = () => {
           overflow: hidden !important;
           position: relative !important;
           aspect-ratio: unset !important;
-          max-width: none !important;
-          max-height: none !important;
         }
 
         .str-video__video-container,
@@ -1172,74 +1276,11 @@ const Meeting = () => {
           image-rendering: crisp-edges !important;
         }
 
-        /* Name Tag overlay */
-        .str-video__participant-details {
-          position: absolute !important;
-          bottom: 12px !important;
-          left: 12px !important;
-          z-index: 30 !important;
-          background: rgba(0, 0, 0, 0.75) !important;
-          backdrop-filter: blur(12px) !important;
-          padding: 4px 10px !important;
-          border-radius: 0.75rem !important;
-          border: 1px solid rgba(255, 255, 255, 0.15) !important;
-          color: #ffffff !important;
-          font-weight: 600 !important;
-          font-size: 0.8125rem !important;
-          display: flex !important;
-          align-items: center !important;
-          gap: 6px !important;
-        }
-
-        .str-video__call-controls {
-          background: transparent !important;
-          border: none !important;
-          padding: 0 !important;
-        }
-
-        /* Hide built-in Stream circular avatars */
+        /* Hide built-in Stream circular avatar overlays */
         .str-video__avatar-fallback,
         .str-video__avatar,
         .str-video__participant-avatar,
         .str-video__avatar-badge {
-          display: none !important;
-        }
-        
-        .str-video__menu,
-        .str-video__menu-container {
-          background-color: #18181b !important;
-          color: white !important;
-          border: 1px solid rgba(255,255,255,0.1) !important;
-          border-radius: 1rem !important;
-          font-family: inherit !important;
-        }
-
-        .str-video__menu-item:hover,
-        .str-video__button:hover {
-          background-color: rgba(255,255,255,0.1) !important;
-        }
-
-        .str-video__composite-button {
-          background: rgba(255,255,255,0.1) !important;
-          color: white !important;
-          border-radius: 1rem !important;
-          transition: all 0.2s;
-        }
-
-        .str-video__composite-button:hover {
-          background: rgba(255,255,255,0.2) !important;
-        }
-
-        .str-video__composite-button--danger {
-          background: #ef4444 !important;
-        }
-
-        .str-video__composite-button--danger:hover {
-          background: #dc2626 !important;
-        }
-
-        .str-video__avatar-fallback,
-        .str-video__avatar {
           display: none !important;
         }
       `}</style>
