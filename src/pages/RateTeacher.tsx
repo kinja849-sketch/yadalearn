@@ -31,11 +31,11 @@ export default function RateTeacher() {
           return;
         }
 
-        // 2. Check if id is a live_classes record
+        // 2. Check if id is a live_classes record (by id or room_id)
         const { data: lc } = await supabase
           .from('live_classes')
           .select('teacher_id, teacher:profiles!live_classes_teacher_id_fkey(full_name)')
-          .eq('id', id)
+          .or(`id.eq.${id},room_id.eq.${id}`)
           .maybeSingle();
 
         if (lc && lc.teacher_id) {
@@ -113,7 +113,7 @@ export default function RateTeacher() {
 
       if (currentUserId && targetTeacherId) {
         // Insert into session_ratings
-        const isUuidClass = id && id.length === 36 && !id.includes('-');
+        const isUuidClass = id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
         const ratingPayload: any = {
           rater_id: currentUserId,
           rated_id: targetTeacherId,
@@ -134,12 +134,20 @@ export default function RateTeacher() {
           throw ratingErr;
         }
 
-        // If id matches a booking, update booking rating field as well
+        // Update booking rating and status to completed
         if (id) {
-          await supabase
-            .from('bookings')
-            .update({ rating: rating })
-            .eq('id', id);
+          if (isUuidClass) {
+            await supabase
+              .from('bookings')
+              .update({ rating: rating, status: 'completed' })
+              .eq('id', id);
+          } else {
+            await supabase
+              .from('bookings')
+              .update({ rating: rating, status: 'completed' })
+              .eq('student_id', currentUserId)
+              .eq('teacher_id', targetTeacherId);
+          }
         }
 
         // Recalculate average rating for target teacher

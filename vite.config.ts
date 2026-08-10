@@ -17,6 +17,8 @@ const streamTokenPlugin = () => {
 
       const url = new URL(req.url, `http://${req.headers.host}`);
       const userId = url.searchParams.get('user_id');
+      const userRole = url.searchParams.get('role') || 'user';
+      const streamRole = userRole === 'teacher' ? 'admin' : 'user';
 
       if (!userId) {
         res.statusCode = 400;
@@ -24,7 +26,7 @@ const streamTokenPlugin = () => {
       }
 
       try {
-        const token = jwt.sign({ user_id: userId }, secret, { algorithm: 'HS256', noTimestamp: true });
+        const token = jwt.sign({ user_id: userId, role: streamRole }, secret, { algorithm: 'HS256', noTimestamp: true });
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ token }));
       } catch (err: any) {

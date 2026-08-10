@@ -87,7 +87,7 @@ export const JoinClassModal = ({ isOpen, onClose, className, teacherName }: Join
                     .from('live_classes')
                     .select('room_id')
                     .eq('status', 'active')
-                    .order('scheduled_start', { ascending: false })
+                    .order('created_at', { ascending: false })
                     .limit(1);
 
                 if (dbError) throw dbError;

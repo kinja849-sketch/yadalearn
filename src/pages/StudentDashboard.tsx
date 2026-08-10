@@ -350,7 +350,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
 
         const completed = bookingsData.filter((b: any) => {
           const bookingTime = parseBookingDateTime(b.date, b.time);
-          return bookingTime <= now && b.status === 'confirmed' && b.rating !== null && b.rating !== undefined;
+          return b.status === 'completed' || b.status === 'attended' || b.rating !== null || (bookingTime <= now && b.rating !== null && b.rating !== undefined);
         }).length;
 
         setCompletedCount(completed);

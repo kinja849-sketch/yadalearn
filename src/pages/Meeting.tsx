@@ -25,7 +25,7 @@ const profileAvatarCache = new Map<string, string>();
 const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: StreamParticipant }>(
   ({ participant: propParticipant }, ref) => {
     const context = useParticipantViewContext();
-    const participant = propParticipant || context?.participant;
+    const participant = context?.participant || propParticipant;
 
     const { user } = useAuth();
     const [avatarUrl, setAvatarUrl] = useState<string | null>(() => {
@@ -110,7 +110,7 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
     ) % bgColors.length;
     const avatarBg = bgColors[colorIndex];
 
-    const isMuted = participant.isMuted || !participant.isAudioEnabled;
+    const isMuted = participant.isMuted === true;
 
     return (
       <div ref={ref} className="relative w-full h-full bg-[#202124] flex flex-col items-center justify-center p-3 select-none overflow-hidden rounded-2xl border border-white/10 shadow-inner">
@@ -162,11 +162,11 @@ CustomVideoPlaceholder.displayName = 'CustomVideoPlaceholder';
 // Custom Participant UI overlay for live video feed (Thin bottom bar name tag)
 const CustomParticipantViewUI = ({ participant: propParticipant }: { participant?: StreamParticipant }) => {
   const context = useParticipantViewContext();
-  const participant = propParticipant || context?.participant;
+  const participant = context?.participant || propParticipant;
 
   if (!participant) return null;
 
-  const isMuted = participant.isMuted || !participant.isAudioEnabled;
+  const isMuted = participant.isMuted === true;
 
   return (
     <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-2xl">
@@ -303,29 +303,45 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
   const call = useCall();
   const { user } = useAuth();
 
-  const handleMuteAudio = async (userId: string) => {
-    if (!call) return;
+  const handleToggleMuteAudio = async (userId: string, isCurrentlyMuted: boolean) => {
+    if (!call || userId === user?.id) return;
     try {
-      await call.muteUser(userId, 'audio');
+      if (isCurrentlyMuted) {
+        await call.grantPermissions(userId, ['send-audio']).catch(() => {});
+        await call.sendCustomEvent({ type: 'allow-speak', targetUserId: userId });
+      } else {
+        await call.muteUser(userId, 'audio').catch(() => {});
+        await call.revokePermissions(userId, ['send-audio']).catch(() => {});
+        await call.sendCustomEvent({ type: 'mute-audio', targetUserId: userId });
+      }
     } catch (e) {
-      console.error('Failed to mute audio:', e);
+      console.error('Failed to toggle audio mute:', e);
     }
   };
 
-  const handleMuteVideo = async (userId: string) => {
-    if (!call) return;
+  const handleToggleMuteVideo = async (userId: string, isCurrentlyVideoMuted: boolean) => {
+    if (!call || userId === user?.id) return;
     try {
-      await call.muteUser(userId, 'video');
+      if (isCurrentlyVideoMuted) {
+        await call.grantPermissions(userId, ['send-video']).catch(() => {});
+        await call.sendCustomEvent({ type: 'allow-video', targetUserId: userId });
+      } else {
+        await call.muteUser(userId, 'video').catch(() => {});
+        await call.revokePermissions(userId, ['send-video']).catch(() => {});
+        await call.sendCustomEvent({ type: 'mute-video', targetUserId: userId });
+      }
     } catch (e) {
-      console.error('Failed to mute video:', e);
+      console.error('Failed to toggle video mute:', e);
     }
   };
 
   const handleKickParticipant = async (userId: string) => {
-    if (!call) return;
+    if (!call || userId === user?.id) return;
     if (window.confirm("Are you sure you want to remove this participant from the classroom?")) {
       try {
-        await call.removeMembers([userId]);
+        await call.removeMembers([userId]).catch(() => {});
+        await call.blockUser(userId).catch(() => {});
+        await call.sendCustomEvent({ type: 'kick', targetUserId: userId });
       } catch (e) {
         console.error('Failed to remove participant:', e);
       }
@@ -349,7 +365,8 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
   const handleMuteAllAudio = async () => {
     if (!call) return;
     try {
-      await call.muteAllUsers('audio');
+      await call.muteOthers('audio').catch(() => {});
+      await call.sendCustomEvent({ type: 'mute-all-audio' });
     } catch (e) {
       console.error('Failed to mute all audio:', e);
     }
@@ -358,7 +375,8 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
   const handleMuteAllVideo = async () => {
     if (!call) return;
     try {
-      await call.muteAllUsers('video');
+      await call.muteOthers('video').catch(() => {});
+      await call.sendCustomEvent({ type: 'mute-all-video' });
     } catch (e) {
       console.error('Failed to mute all video:', e);
     }
@@ -368,13 +386,13 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
 
   return (
     <div className="absolute top-20 right-6 w-80 sm:w-96 bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl z-50 overflow-hidden text-white animate-in slide-in-from-top-4">
-      <div className="bg-purple-950/60 p-4 border-b border-white/10 flex items-center justify-between">
+      <div className="bg-purple-950/80 p-4 border-b border-white/10 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="material-symbols-outlined text-purple-400 text-xl">
-            {isHost ? 'admin_panel_settings' : 'group'}
+            {isHost ? 'gavel' : 'group'}
           </span>
           <h3 className="font-bold text-sm">
-            {isHost ? `Host Controls (${participants.length})` : `Classroom Participants (${participants.length})`}
+            {isHost ? `Disciplinary Control Center (${participants.length})` : `Classroom Participants (${participants.length})`}
           </h3>
         </div>
         <button onClick={onClose} className="p-1 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
@@ -386,6 +404,7 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
         <div className="p-3 border-b border-white/5 flex gap-2">
           <button
             onClick={handleMuteAllAudio}
+            title="Force mute all student microphones"
             className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
           >
             <span className="material-symbols-outlined text-sm">mic_off</span>
@@ -393,6 +412,7 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
           </button>
           <button
             onClick={handleMuteAllVideo}
+            title="Force disable all student cameras"
             className="flex-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
           >
             <span className="material-symbols-outlined text-sm">videocam_off</span>
@@ -407,6 +427,9 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
         ) : (
           participants.map(p => {
             const isSelf = p.userId === user?.id;
+            const isAudioMuted = p.isMuted || !p.isAudioEnabled;
+            const isVideoMuted = !p.isVideoEnabled;
+
             return (
               <div key={p.userId} className="flex items-center justify-between p-2.5 rounded-2xl bg-zinc-800/40 hover:bg-zinc-800/80 transition-colors border border-white/5">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -433,25 +456,25 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
                     <span className="material-symbols-outlined text-base">push_pin</span>
                   </button>
 
-                  {/* Mute Audio */}
+                  {/* Mute / Unmute Audio */}
                   {isHost && !isSelf && (
                     <button
-                      onClick={() => handleMuteAudio(p.userId)}
-                      title="Mute Audio"
-                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
+                      onClick={() => handleToggleMuteAudio(p.userId, isAudioMuted)}
+                      title={isAudioMuted ? "Allow to Speak / Unmute" : "Mute Audio"}
+                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${isAudioMuted ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
                     >
-                      <span className="material-symbols-outlined text-base">{p.isMuted ? 'mic_off' : 'mic'}</span>
+                      <span className="material-symbols-outlined text-base">{isAudioMuted ? 'mic_off' : 'mic'}</span>
                     </button>
                   )}
 
-                  {/* Mute Video */}
+                  {/* Disable / Allow Video */}
                   {isHost && !isSelf && (
                     <button
-                      onClick={() => handleMuteVideo(p.userId)}
-                      title="Mute Video"
-                      className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-bold transition-colors"
+                      onClick={() => handleToggleMuteVideo(p.userId, isVideoMuted)}
+                      title={isVideoMuted ? "Allow Video" : "Disable Video"}
+                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${isVideoMuted ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
                     >
-                      <span className="material-symbols-outlined text-base">videocam_off</span>
+                      <span className="material-symbols-outlined text-base">{isVideoMuted ? 'videocam_off' : 'videocam'}</span>
                     </button>
                   )}
 
@@ -584,10 +607,10 @@ const SingleControlBar = ({
         </span>
       </button>
 
-      {/* Host / Participants Panel Toggle */}
+      {/* Host Disciplinary Controls / Participants Panel Toggle */}
       <button
         onClick={onToggleModPanel}
-        title={isHost ? "Host Controls" : "Classroom Participants"}
+        title={isHost ? "Disciplinary Controls & Moderation" : "Classroom Participants"}
         className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center relative ${
           showModPanel
             ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-600/30'
@@ -595,9 +618,10 @@ const SingleControlBar = ({
         }`}
       >
         <span className="material-symbols-outlined text-xl">
-          {isHost ? 'admin_panel_settings' : 'group'}
+          {isHost ? 'gavel' : 'group'}
         </span>
-        {participants.length > 0 && (
+        {/* Meet badge ONLY appears on screen when the host actually meets participant(s) (participants.length > 1); otherwise it doesn't appear at all */}
+        {participants.length > 1 && (
           <span className="absolute -top-1 -right-1 bg-purple-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-zinc-900">
             {participants.length}
           </span>
@@ -641,6 +665,37 @@ const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
   const { useHasOngoingScreenShare } = useCallStateHooks();
   const hasScreenShare = useHasOngoingScreenShare();
   const call = useCall();
+
+  // Listen for host custom events (allow-speak, mute-audio, mute-video, mute-all-audio, mute-all-video, kick)
+  useEffect(() => {
+    if (!call || !user) return;
+    const unsubscribe = call.on('custom', (event: any) => {
+      const custom = event.custom;
+      if (!custom) return;
+
+      const isTarget = custom.targetUserId === user.id;
+
+      if (custom.type === 'allow-speak' && isTarget) {
+        call.microphone.enable().catch(err => console.warn('Mic enable error:', err));
+      } else if (custom.type === 'mute-audio' && isTarget) {
+        call.microphone.disable().catch(err => console.warn('Mic disable error:', err));
+      } else if (custom.type === 'allow-video' && isTarget) {
+        call.camera.enable().catch(err => console.warn('Cam enable error:', err));
+      } else if (custom.type === 'mute-video' && isTarget) {
+        call.camera.disable().catch(err => console.warn('Cam disable error:', err));
+      } else if (custom.type === 'mute-all-audio' && !isHost) {
+        call.microphone.disable().catch(err => console.warn('Mic disable error:', err));
+      } else if (custom.type === 'mute-all-video' && !isHost) {
+        call.camera.disable().catch(err => console.warn('Cam disable error:', err));
+      } else if (custom.type === 'kick' && isTarget) {
+        alert("You have been removed from the classroom by the teacher.");
+        handleLeave();
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [call, user?.id, isHost]);
 
   // Configure high-quality screen share track parameters whenever call instance is ready
   useEffect(() => {
@@ -726,13 +781,22 @@ const Meeting = () => {
 
       if (data && data.length > 0) {
         const status = data[0].status?.toLowerCase();
+        const role = user?.role || localStorage.getItem('yadalearn-user-role');
         if (status === 'completed' || status === 'ended' || status === 'cancelled') {
-          setError('This class session has ended and is no longer joinable.');
+          if (role === 'teacher') {
+            // Teacher (host) starting/re-opening the class: activate it
+            const updateQuery = isUuid
+              ? supabase.from('live_classes').update({ status: 'active' }).eq('id', id)
+              : supabase.from('live_classes').update({ status: 'active' }).eq('room_id', id);
+            await updateQuery;
+          } else {
+            setError('This class session has ended and is no longer joinable.');
+          }
         }
       }
     };
     checkClassStatus();
-  }, [id]);
+  }, [id, user]);
 
   // Supabase Realtime channel for Waiting Room + Session-Ended listener
   useEffect(() => {
@@ -815,10 +879,11 @@ const Meeting = () => {
         // Assign host role to teacher when creating/joining call
         await callObj.getOrCreate({
           data: {
+            created_by_id: isHost ? user.id : undefined,
             members: [
               {
                 user_id: user.id,
-                role: isHost ? 'host' : 'user',
+                role: isHost ? 'admin' : 'user',
               },
             ],
           },
@@ -830,12 +895,22 @@ const Meeting = () => {
               update_members: [
                 {
                   user_id: user.id,
-                  role: 'host',
+                  role: 'admin',
                 },
               ],
             });
           } catch (e) {
             console.log('Update call members host role:', e);
+          }
+        } else if (user?.id && id) {
+          // Record attendance for student upon joining the live class
+          try {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+            if (isUuid) {
+              await supabase.from('bookings').update({ status: 'completed' }).eq('id', id).eq('student_id', user.id);
+            }
+          } catch (e) {
+            console.warn('Failed to update booking status on join:', e);
           }
         }
 

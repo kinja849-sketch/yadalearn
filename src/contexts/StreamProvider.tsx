@@ -40,7 +40,8 @@ export const StreamProvider = ({ children }: { children: React.ReactNode }) => {
     const initStream = async () => {
       try {
         // Fetch secure token from our Vite proxy API or Netlify function
-        const response = await fetch(`/api/get-stream-token?user_id=${user.id}`);
+        const role = user.role || localStorage.getItem('yadalearn-user-role') || 'user';
+        const response = await fetch(`/api/get-stream-token?user_id=${user.id}&role=${role}`);
         
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('text/html')) {

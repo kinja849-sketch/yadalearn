@@ -13,12 +13,22 @@ export default function ParentPerformance() {
     const location = useLocation();
     const { user } = useAuth();
 
-    const [selectedChild, setSelectedChild] = useState<any>(location.state?.studentId || null);
+    const searchParams = new URLSearchParams(location.search);
+    const paramStudentId = searchParams.get('studentId') || searchParams.get('student');
+    const initialStudentId = paramStudentId || location.state?.studentId || localStorage.getItem('yadalearn_selected_student_id');
+
+    const [selectedChild, setSelectedChild] = useState<any>(initialStudentId || null);
     const [selectedChildName, setSelectedChildName] = useState<string>('');
     const [childrenData, setChildrenData] = useState<any[]>(location.state?.childrenList || []);
     
     const [performanceData, setPerformanceData] = useState<any>(null);
     const [loading, setLoading] = useState(false);
+
+    const handleSelectChild = (childId: string) => {
+        setSelectedChild(childId);
+        localStorage.setItem('yadalearn_selected_student_id', childId);
+        navigate(`/parent/performance?studentId=${childId}`, { replace: true });
+    };
 
     useEffect(() => {
         if (childrenData.length === 0 && user?.id) {
@@ -46,6 +56,10 @@ export default function ParentPerformance() {
                 avatar: link.student.avatar_url
             }));
             setChildrenData(mapped);
+            const match = initialStudentId && mapped.find(c => c.id === initialStudentId);
+            const chosenId = match ? match.id : (selectedChild && mapped.some(c => c.id === selectedChild) ? selectedChild : mapped[0].id);
+            setSelectedChild(chosenId);
+            localStorage.setItem('yadalearn_selected_student_id', chosenId);
         }
     }
 

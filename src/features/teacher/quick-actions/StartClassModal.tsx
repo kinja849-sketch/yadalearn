@@ -250,16 +250,32 @@ export const StartClassModal = ({ isOpen, onClose, session }: StartClassModalPro
         }
 
         try {
-            const roomName = `class-${user.id}-${Date.now()}`;
+            // Use existing room_id if session already has one, or use session.id if room-formatted, or generate new
+            const roomName = session?.room_id || 
+                (session?.id && typeof session.id === 'string' && session.id.startsWith('class-') ? session.id : `class-${user.id}-${Date.now()}`);
             
+            let updated = false;
+
             if (session?.id) {
-                // Update existing scheduled class
-                await supabase.from('live_classes').update({
-                    room_id: roomName,
+                const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id);
+                if (isUuid) {
+                    const { data } = await supabase.from('live_classes').update({
+                        room_id: roomName,
+                        status: 'active'
+                    }).eq('id', session.id).select('id');
+                    if (data && data.length > 0) updated = true;
+                }
+            }
+
+            if (!updated && roomName) {
+                const { data } = await supabase.from('live_classes').update({
                     status: 'active'
-                }).eq('id', session.id);
-            } else {
-                // Insert new ad-hoc class
+                }).eq('room_id', roomName).select('id');
+                if (data && data.length > 0) updated = true;
+            }
+
+            if (!updated) {
+                // Insert new active live class record
                 await supabase.from('live_classes').insert({
                     teacher_id: user.id,
                     room_id: roomName,

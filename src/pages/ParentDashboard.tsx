@@ -20,6 +20,9 @@ const ParentDashboard = () => {
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [selectedTeacherIdForChat, setSelectedTeacherIdForChat] = useState<string | undefined>(undefined);
+  const [selectedChildForChat, setSelectedChildForChat] = useState<string | undefined>(undefined);
+  const [childLastMessages, setChildLastMessages] = useState<Record<string, any>>({});
+  const [childUnreadCounts, setChildUnreadCounts] = useState<Record<string, number>>({});
   
   const [linkedChildren, setLinkedChildren] = useState<any[]>([]);
   const [selectedChild, setSelectedChild] = useState<any | null>(null);
@@ -156,6 +159,52 @@ const ParentDashboard = () => {
     }
     fetchChildTeachers();
   }, [selectedChild?.id]);
+
+  useEffect(() => {
+    async function fetchChildMessages() {
+      if (!user?.id) return;
+      try {
+        const { data } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+          .order('created_at', { ascending: true });
+
+        if (data) {
+          const mapping: Record<string, any> = {};
+          const counts: Record<string, number> = {};
+          data.forEach((m: any) => {
+            const partnerId = m.sender_id === user.id ? m.receiver_id : m.sender_id;
+            mapping[partnerId] = m;
+            if (!m.is_read && m.receiver_id === user.id) {
+              counts[partnerId] = (counts[partnerId] || 0) + 1;
+            }
+          });
+          setChildLastMessages(mapping);
+          setChildUnreadCounts(counts);
+        }
+      } catch (err) {
+        console.error("Error fetching child messages:", err);
+      }
+    }
+
+    if (user?.id) {
+      fetchChildMessages();
+      const channel = supabase.channel('parent-dashboard-chat-messages')
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'chat_messages'
+        }, () => {
+          fetchChildMessages();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [user?.id]);
 
   const handleImageClick = () => {
     fileInputRef.current?.click();
@@ -490,7 +539,7 @@ const ParentDashboard = () => {
                 </div>
                 
                 <div 
-                  onClick={() => navigate('/child-progress', { state: { studentId: selectedChild?.id } })}
+                  onClick={() => navigate(`/child-progress?studentId=${selectedChild?.id || ''}`, { state: { studentId: selectedChild?.id } })}
                   className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -500,7 +549,7 @@ const ParentDashboard = () => {
                 </div>
 
                 <div 
-                  onClick={() => navigate('/parent/assignments', { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
+                  onClick={() => navigate(`/parent/assignments?studentId=${selectedChild?.id || ''}`, { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
                   className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -510,7 +559,7 @@ const ParentDashboard = () => {
                 </div>
 
                 <div 
-                  onClick={() => navigate('/parent/performance', { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
+                  onClick={() => navigate(`/parent/performance?studentId=${selectedChild?.id || ''}`, { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
                   className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -520,7 +569,7 @@ const ParentDashboard = () => {
                 </div>
 
                 <div 
-                  onClick={() => navigate('/parent/classes', { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
+                  onClick={() => navigate(`/parent/classes?studentId=${selectedChild?.id || ''}`, { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
                   className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -530,7 +579,7 @@ const ParentDashboard = () => {
                 </div>
 
                 <div 
-                  onClick={() => navigate('/parent/classes', { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
+                  onClick={() => navigate(`/parent/classes?studentId=${selectedChild?.id || ''}`, { state: { studentId: selectedChild?.id, childrenList: linkedChildren } })}
                   className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -568,34 +617,67 @@ const ParentDashboard = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {linkedChildren.map(child => (
-                    <div 
-                      key={child.id} 
-                      onClick={() => setSelectedChild(child)}
-                      className={cn(
-                        "flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition-all border-2",
-                        selectedChild?.id === child.id 
-                          ? "border-emerald-500 bg-emerald-50/50 shadow-md" 
-                          : "border-transparent bg-white hover:bg-emerald-50/30 shadow-sm hover:border-emerald-200"
-                      )}
-                    >
-                       <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
-                         <AvatarImage src={child.avatar} />
-                         <AvatarFallback className="bg-emerald-100 text-emerald-700 font-bold">
-                           {child.name.charAt(0)}
-                         </AvatarFallback>
-                       </Avatar>
-                       <div className="flex-1">
-                         <h4 className="font-bold text-slate-800">{child.name}</h4>
-                         <p className="text-xs text-slate-500 font-medium">
-                           {childAlerts[child.id] || `Grade ${child.grade} • ${child.focus}`}
-                         </p>
-                       </div>
-                       {selectedChild?.id === child.id && (
-                         <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                       )}
-                    </div>
-                  ))}
+                  <div className="space-y-3">
+                    {linkedChildren.map(child => (
+                      <div 
+                        key={child.id} 
+                        onClick={() => setSelectedChild(child)}
+                        className={cn(
+                          "flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition-all border-2",
+                          selectedChild?.id === child.id 
+                            ? "border-emerald-500 bg-emerald-50/50 shadow-md" 
+                            : "border-transparent bg-white hover:bg-emerald-50/30 shadow-sm hover:border-emerald-200"
+                        )}
+                      >
+                         <div className="relative shrink-0">
+                           <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
+                             <AvatarImage src={child.avatar} />
+                             <AvatarFallback className="bg-emerald-100 text-emerald-700 font-bold">
+                               {child.name.charAt(0)}
+                             </AvatarFallback>
+                           </Avatar>
+                           {childUnreadCounts[child.id] > 0 && (
+                             <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-extrabold w-5 h-5 rounded-full flex items-center justify-center border-2 border-white animate-pulse">
+                               {childUnreadCounts[child.id]}
+                             </span>
+                           )}
+                         </div>
+                         <div className="flex-1 min-w-0">
+                           <h4 className="font-bold text-slate-800 dark:text-white text-base truncate">{child.name}</h4>
+                           <p className="text-xs text-slate-500 dark:text-zinc-400 font-medium truncate">
+                             {childLastMessages[child.id] ? (
+                               <>
+                                 <span className="font-semibold text-slate-700 dark:text-zinc-200">
+                                   {childLastMessages[child.id].sender_id === user?.id ? "You: " : `${child.name.split(' ')[0]}: `}
+                                 </span>
+                                 {childLastMessages[child.id].attachment_type === 'image' ? '📷 Photo' :
+                                  childLastMessages[child.id].attachment_type === 'audio' ? '🎤 Voice note' :
+                                  childLastMessages[child.id].message}
+                               </>
+                             ) : (
+                               childAlerts[child.id] || `Grade ${child.grade} • ${child.focus}`
+                             )}
+                           </p>
+                         </div>
+                         <button
+                           onClick={(e) => {
+                             e.stopPropagation();
+                             setSelectedChild(child);
+                             setSelectedChildForChat(child.id);
+                             setActiveModal('message');
+                           }}
+                           title={`Chat with ${child.name}`}
+                           className="p-2 px-3 rounded-xl bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition-colors z-10 shrink-0"
+                         >
+                           <span className="material-symbols-outlined text-base">chat</span>
+                           <span className="hidden sm:inline">Text Child</span>
+                         </button>
+                         {selectedChild?.id === child.id && (
+                           <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                         )}
+                      </div>
+                    ))}
+                   </div>
                 </div>
               )}
             </div>
@@ -673,8 +755,8 @@ const ParentDashboard = () => {
       {isScanModalOpen && <ScanQRModal onClose={() => setIsScanModalOpen(false)} />}
       <MessageTeacherModal 
         isOpen={activeModal === 'message'} 
-        onClose={() => { setActiveModal(null); setSelectedTeacherIdForChat(undefined); }} 
-        recipientId={selectedTeacherIdForChat} 
+        onClose={() => { setActiveModal(null); setSelectedTeacherIdForChat(undefined); setSelectedChildForChat(undefined); }} 
+        recipientId={selectedTeacherIdForChat || selectedChildForChat} 
       />
 
 

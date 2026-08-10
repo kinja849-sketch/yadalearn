@@ -12,6 +12,8 @@ export async function handler(event, context) {
   }
 
   const userId = event.queryStringParameters?.user_id;
+  const userRole = event.queryStringParameters?.role || 'user';
+  const streamRole = userRole === 'teacher' ? 'admin' : 'user';
 
   if (!userId) {
     return {
@@ -23,7 +25,7 @@ export async function handler(event, context) {
 
   try {
     // Create Stream JWT
-    const token = jwt.sign({ user_id: userId }, secret, { algorithm: 'HS256', noTimestamp: true });
+    const token = jwt.sign({ user_id: userId, role: streamRole }, secret, { algorithm: 'HS256', noTimestamp: true });
     
     return {
       statusCode: 200,

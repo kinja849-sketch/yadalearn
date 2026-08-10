@@ -14,7 +14,11 @@ const ParentProgress = () => {
   const { user } = useAuth();
   
   const location = useLocation();
-  const [selectedChild, setSelectedChild] = useState<any>(location.state?.studentId || null);
+  const searchParams = new URLSearchParams(location.search);
+  const paramStudentId = searchParams.get('studentId') || searchParams.get('student');
+  const initialStudentId = paramStudentId || location.state?.studentId || localStorage.getItem('yadalearn_selected_student_id');
+
+  const [selectedChild, setSelectedChild] = useState<string | null>(initialStudentId || null);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
   const [childrenData, setChildrenData] = useState<any[]>([]);
@@ -22,6 +26,12 @@ const ParentProgress = () => {
   const [completedSessions, setCompletedSessions] = useState<any[]>([]);
   const [weeklyProgress, setWeeklyProgress] = useState<number[]>([0, 0, 0, 0, 0]);
   const [overallPercentage, setOverallPercentage] = useState(0);
+
+  const handleSelectChild = (childId: string) => {
+    setSelectedChild(childId);
+    localStorage.setItem('yadalearn_selected_student_id', childId);
+    navigate(`/child-progress?studentId=${childId}`, { replace: true });
+  };
 
   useEffect(() => {
     async function fetchChildren() {
@@ -45,6 +55,10 @@ const ParentProgress = () => {
           avatar: link.student.avatar_url
         }));
         setChildrenData(mapped);
+        const match = initialStudentId && mapped.find(c => c.id === initialStudentId);
+        const chosenId = match ? match.id : (selectedChild && mapped.some(c => c.id === selectedChild) ? selectedChild : mapped[0].id);
+        setSelectedChild(chosenId);
+        localStorage.setItem('yadalearn_selected_student_id', chosenId);
       }
     }
     fetchChildren();
@@ -152,7 +166,7 @@ const ParentProgress = () => {
                   <Card 
                     key={child.id} 
                     className="border border-gray-100 shadow-sm rounded-3xl overflow-hidden cursor-pointer hover:shadow-md transition-shadow hover:border-emerald-200 group"
-                    onClick={() => setSelectedChild(child.id)}
+                    onClick={() => handleSelectChild(child.id)}
                   >
                     <CardContent className="p-5 flex items-center gap-4">
                       {child.avatar ? (

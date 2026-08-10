@@ -302,75 +302,77 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
                 const rawFetch = rawFetchGlobal;
 
                 let list: any[] = [];
-                let hasActiveConnections = false;
+                const mergedMap = new Map<string, any>();
 
-                if (role === 'student') {
-                    console.log("Fetching student links natively...");
-                    const linkData = await rawFetch('teacher_student_links', `student_id=eq.${userId}&status=eq.accepted&select=teacher:profiles!teacher_student_links_teacher_id_fkey(id,full_name,avatar_url,subjects,is_online,last_active_at,country,bio,cv_url,teacher_profiles(rating))`).catch(e => { console.error(e); return []; });
-                    
-                    console.log("Fetching student bookings natively...");
-                    const bookingData = await rawFetch('bookings', `student_id=eq.${userId}&select=teacher:profiles!bookings_teacher_id_fkey(id,full_name,avatar_url,subjects,is_online,last_active_at,country,bio,cv_url,teacher_profiles(rating))`).catch(e => { console.error(e); return []; });
-
-                    const linkList = linkData ? linkData.map((item: any) => item.teacher).filter(Boolean) : [];
-                    const bookingList = bookingData ? bookingData.map((item: any) => item.teacher).filter(Boolean) : [];
-
-                    const mergedMap = new Map();
-                    linkList.forEach((t: any) => mergedMap.set(t.id, t));
-                    bookingList.forEach((t: any) => mergedMap.set(t.id, t));
-
-                    if (linkList.length > 0 || bookingList.length > 0) hasActiveConnections = true;
-
-                    if (recipientId && !mergedMap.has(recipientId)) {
-                        const recipientProfile = await rawFetch('profiles', `id=eq.${recipientId}&select=id,full_name,avatar_url,subjects,is_online,last_active_at,country,bio,cv_url,teacher_profiles(rating)`).then(d => d[0]).catch(() => null);
-                        if (recipientProfile) mergedMap.set(recipientId, recipientProfile);
+                // 1. Fetch chatted user IDs from existing chat_messages
+                const chattedUserIds = new Set<string>();
+                try {
+                    const chatHistory = await rawFetch('chat_messages', `or=(sender_id.eq.${userId},receiver_id.eq.${userId})&select=sender_id,receiver_id`);
+                    if (chatHistory && Array.isArray(chatHistory)) {
+                        chatHistory.forEach((m: any) => {
+                            if (m.sender_id && m.sender_id !== userId) chattedUserIds.add(m.sender_id);
+                            if (m.receiver_id && m.receiver_id !== userId) chattedUserIds.add(m.receiver_id);
+                        });
                     }
-
-                    list = Array.from(mergedMap.values());
-                } else if (role === 'teacher') {
-                    console.log("Fetching teacher links natively...");
-                    const linkData = await rawFetch('teacher_student_links', `teacher_id=eq.${userId}&status=eq.accepted&select=student:profiles!teacher_student_links_student_id_fkey(id,full_name,avatar_url,country,is_online,last_active_at)`).catch(e => { console.error(e); return []; });
-                    
-                    console.log("Fetching teacher bookings natively...");
-                    const bookingData = await rawFetch('bookings', `teacher_id=eq.${userId}&select=student:profiles!bookings_student_id_fkey(id,full_name,avatar_url,country,is_online,last_active_at)`).catch(e => { console.error(e); return []; });
-
-                    const linkList = linkData ? linkData.map((item: any) => item.student).filter(Boolean) : [];
-                    const bookingList = bookingData ? bookingData.map((item: any) => item.student).filter(Boolean) : [];
-
-                    const mergedMap = new Map();
-                    linkList.forEach((s: any) => mergedMap.set(s.id, s));
-                    bookingList.forEach((s: any) => mergedMap.set(s.id, s));
-
-                    if (linkList.length > 0 || bookingList.length > 0) hasActiveConnections = true;
-
-                    if (recipientId && !mergedMap.has(recipientId)) {
-                        const recipientProfile = await rawFetch('profiles', `id=eq.${recipientId}&select=id,full_name,avatar_url,country,is_online,last_active_at`).then(d => d[0]).catch(() => null);
-                        if (recipientProfile) mergedMap.set(recipientId, recipientProfile);
-                    }
-
-                    list = Array.from(mergedMap.values());
-                } else if (role === 'parent') {
-                    console.log("Fetching parent linked children and their teachers...");
-                    const linkData = await rawFetch('parent_student_links', `parent_id=eq.${userId}&select=student_id`).catch(e => { console.error(e); return []; });
-                    const studentIds = linkData ? linkData.map((l: any) => l.student_id) : [];
-                    
-                    let bookingList: any[] = [];
-                    if (studentIds.length > 0) {
-                        const studentIdsStr = `(${studentIds.join(',')})`;
-                        const bookingData = await rawFetch('bookings', `student_id=in.${studentIdsStr}&select=teacher:profiles!bookings_teacher_id_fkey(id,full_name,avatar_url,subjects,is_online,last_active_at,country,bio,cv_url,teacher_profiles(rating))`).catch(e => { console.error(e); return []; });
-                        bookingList = bookingData ? bookingData.map((item: any) => item.teacher).filter(Boolean) : [];
-                    }
-
-                    const mergedMap = new Map();
-                    bookingList.forEach((t: any) => mergedMap.set(t.id, t));
-
-                    if (recipientId && !mergedMap.has(recipientId)) {
-                        const recipientProfile = await rawFetch('profiles', `id=eq.${recipientId}&select=id,full_name,avatar_url,subjects,is_online,last_active_at,country,bio,cv_url,teacher_profiles(rating)`).then(d => d[0]).catch(() => null);
-                        if (recipientProfile) mergedMap.set(recipientId, recipientProfile);
-                    }
-                    list = Array.from(mergedMap.values());
+                } catch (e) {
+                    console.warn("Failed to fetch chat history user IDs:", e);
                 }
 
-                console.log("Active connections list:", list.length);
+                const targetPartnerIds = new Set<string>(chattedUserIds);
+                if (recipientId) targetPartnerIds.add(recipientId);
+
+                if (role === 'student') {
+                    // Fetch teachers from links & bookings
+                    const linkData = await rawFetch('teacher_student_links', `student_id=eq.${userId}&status=eq.accepted&select=teacher_id`).catch(() => []);
+                    const bookingData = await rawFetch('bookings', `student_id=eq.${userId}&select=teacher_id`).catch(() => []);
+                    if (linkData) linkData.forEach((l: any) => l.teacher_id && targetPartnerIds.add(l.teacher_id));
+                    if (bookingData) bookingData.forEach((b: any) => b.teacher_id && targetPartnerIds.add(b.teacher_id));
+
+                    // Fetch linked parents
+                    const parentLinks = await rawFetch('parent_student_links', `student_id=eq.${userId}&select=parent_id`).catch(() => []);
+                    if (parentLinks) parentLinks.forEach((p: any) => p.parent_id && targetPartnerIds.add(p.parent_id));
+
+                } else if (role === 'teacher') {
+                    // Fetch students from links & bookings
+                    const studentIds = new Set<string>();
+                    const linkData = await rawFetch('teacher_student_links', `teacher_id=eq.${userId}&status=eq.accepted&select=student_id`).catch(() => []);
+                    const bookingData = await rawFetch('bookings', `teacher_id=eq.${userId}&select=student_id`).catch(() => []);
+                    if (linkData) linkData.forEach((l: any) => l.student_id && (studentIds.add(l.student_id), targetPartnerIds.add(l.student_id)));
+                    if (bookingData) bookingData.forEach((b: any) => b.student_id && (studentIds.add(b.student_id), targetPartnerIds.add(b.student_id)));
+
+                    // Fetch parents of those students
+                    if (studentIds.size > 0) {
+                        const studentIdsStr = `(${Array.from(studentIds).join(',')})`;
+                        const parentLinks = await rawFetch('parent_student_links', `student_id=in.${studentIdsStr}&select=parent_id`).catch(() => []);
+                        if (parentLinks) parentLinks.forEach((p: any) => p.parent_id && targetPartnerIds.add(p.parent_id));
+                    }
+
+                } else if (role === 'parent') {
+                    // Fetch linked children
+                    const linkData = await rawFetch('parent_student_links', `parent_id=eq.${userId}&select=student_id`).catch(() => []);
+                    const studentIds = linkData ? linkData.map((l: any) => l.student_id).filter(Boolean) : [];
+                    studentIds.forEach(id => targetPartnerIds.add(id));
+
+                    // Fetch teachers of those children
+                    if (studentIds.length > 0) {
+                        const studentIdsStr = `(${studentIds.join(',')})`;
+                        const bookingData = await rawFetch('bookings', `student_id=in.${studentIdsStr}&select=teacher_id`).catch(() => []);
+                        if (bookingData) bookingData.forEach((b: any) => b.teacher_id && targetPartnerIds.add(b.teacher_id));
+                    }
+                }
+
+                // Fetch profiles for all collected partner IDs
+                if (targetPartnerIds.size > 0) {
+                    const idsStr = `(${Array.from(targetPartnerIds).join(',')})`;
+                    const profilesData = await rawFetch('profiles', `id=in.${idsStr}&select=id,full_name,avatar_url,country,subjects,is_online,last_active_at,role,bio,cv_url,teacher_profiles(rating)`).catch(e => { console.error(e); return []; });
+                    if (profilesData && Array.isArray(profilesData)) {
+                        profilesData.forEach((p: any) => {
+                            if (p.id !== userId) mergedMap.set(p.id, p);
+                        });
+                    }
+                }
+
+                list = Array.from(mergedMap.values());
 
                 // Flatten teacher_profiles details into main profile object for teachers
                 list = list.map(p => {
@@ -414,10 +416,10 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
 
     // Handle preselected partner changes from props dynamically
     useEffect(() => {
-        if (recipientId && partners.some(p => p.id === recipientId)) {
+        if (recipientId) {
             setSelectedPartnerId(recipientId);
         }
-    }, [recipientId, partners]);
+    }, [recipientId]);
 
     // Update selectedPartner object when selectedPartnerId changes
     useEffect(() => {
@@ -637,7 +639,9 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
     const automatedMessageSentRef = useRef<Record<string, boolean>>({});
 
     useEffect(() => {
-        if (!isOpen || role !== 'parent' || !userId || !selectedPartnerId) return;
+        if (!isOpen || role !== 'parent' || !userId || !selectedPartnerId || !selectedPartner) return;
+        // Automated intro messages are strictly for teachers, NOT for children/students at home
+        if (selectedPartner.role !== 'teacher') return;
         if (loadingMessages || messages.length > 0) return;
         if (automatedMessageSentRef.current[selectedPartnerId]) return;
         
@@ -687,7 +691,7 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
         };
 
         sendAutomatedIntro();
-    }, [isOpen, role, userId, selectedPartnerId, messages.length, loadingMessages, user]);
+    }, [isOpen, role, userId, selectedPartnerId, selectedPartner, messages.length, loadingMessages, user]);
 
     // Scroll to bottom on new messages
     useEffect(() => {
@@ -880,18 +884,8 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
                     } else if (status === 'scheduled' && lc.scheduled_at) {
                         const scheduledTime = new Date(lc.scheduled_at).getTime();
                         const durationMs = (lc.duration_minutes || 60) * 60 * 1000;
-                        if (Date.now() > scheduledTime + durationMs) {
-                            isEnded = true;
-                        }
-                    } else if (status !== 'active') {
-                        isEnded = true;
-                    }
-                } else {
-                    const parts = roomId.split('-');
-                    const timestampStr = parts[parts.length - 1];
-                    if (/^\d{10,}$/.test(timestampStr)) {
-                        const createdAt = parseInt(timestampStr, 10);
-                        if (Date.now() - createdAt > 60 * 60 * 1000) {
+                        // Only mark as ended if past scheduled time + duration + 24 hour grace period
+                        if (Date.now() > scheduledTime + durationMs + 24 * 60 * 60 * 1000) {
                             isEnded = true;
                         }
                     }
@@ -986,10 +980,7 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
                                                     )}
                                                 </div>
                                                 <p className="text-xs text-gray-400 truncate mt-0.5">
-                                                    {role === 'student'
-                                                        ? (p.subjects?.join(', ') || 'General Studies')
-                                                        : (p.country || 'Student')
-                                                    }
+                                                    {p.role === 'teacher' ? (p.subjects?.join(', ') || 'Teacher') : (p.role ? p.role.charAt(0).toUpperCase() + p.role.slice(1) : (p.country || 'User'))}
                                                 </p>
                                             </div>
                                         </button>
