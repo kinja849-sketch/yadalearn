@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { supabase } from '@/lib/supabase';
 import { useStream } from '@/contexts/StreamProvider';
+import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 interface StartClassModalProps {
@@ -11,6 +12,13 @@ interface StartClassModalProps {
 }
 
 export const StartClassModal = ({ isOpen, onClose, session }: StartClassModalProps) => {
+    const { user: authUser, subjects } = useAuth();
+    const teacherPrimarySubject = (subjects && subjects.length > 0)
+        ? subjects[0]
+        : ((authUser as any)?.subjects && (authUser as any).subjects.length > 0)
+            ? (authUser as any).subjects[0]
+            : 'English';
+
     const [sessionStatus, setSessionStatus] = useState<'pre-live' | 'live'>('pre-live');
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
@@ -281,8 +289,8 @@ export const StartClassModal = ({ isOpen, onClose, session }: StartClassModalPro
                     room_id: roomName,
                     status: 'active',
                     scheduled_at: new Date().toISOString(),
-                    title: session?.title || 'Ad-Hoc Session',
-                    subject: session?.subject || 'General'
+                    title: session?.title || `${teacherPrimarySubject} Live Session`,
+                    subject: session?.subject || teacherPrimarySubject
                 });
             }
 
@@ -344,7 +352,7 @@ export const StartClassModal = ({ isOpen, onClose, session }: StartClassModalPro
                                 >
                                     <span className="material-symbols-outlined">arrow_back</span>
                                 </button>
-                                <h2 className="text-lg font-bold leading-tight tracking-tight">{session?.subject || 'Ad-Hoc Class'}</h2>
+                                <h2 className="text-lg font-bold leading-tight tracking-tight">{session?.subject || `${teacherPrimarySubject} Class`}</h2>
                                 <div className="size-10"></div>
                             </div>
                         </div>
@@ -368,7 +376,7 @@ export const StartClassModal = ({ isOpen, onClose, session }: StartClassModalPro
                                             )}
                                         </div>
                                         <h1 className="text-4xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tight leading-[1.1] mb-2 font-display">
-                                            {session?.title || 'Ad-Hoc Class Session'}
+                                            {session?.title || `${teacherPrimarySubject} Class Session`}
                                         </h1>
                                         <p className="text-slate-500 dark:text-zinc-400 font-medium">
                                             Pre-flight checks & student admission.

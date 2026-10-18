@@ -37,39 +37,70 @@ const TeacherCalendar = () => {
 
         async function fetchEvents() {
             try {
-                const { data, error } = await supabase
+                const { data: bookingsData, error: bookingsError } = await supabase
                     .from('bookings')
                     .select('*, student:profiles!bookings_student_id_fkey(*)')
                     .eq('teacher_id', userId)
-                    .eq('status', 'confirmed');
+                    .in('status', ['confirmed', 'scheduled', 'pending', 'completed']);
 
-                if (error) throw error;
+                if (bookingsError) throw bookingsError;
 
-                if (data) {
-                    const mapped = data.map((b: any) => {
-                        let formattedDate = b.date;
-                        try {
-                            const parts = b.date.split('-');
-                            if (parts.length === 3) {
-                                const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-                                formattedDate = format(d, 'MMMM d, yyyy');
-                            }
-                        } catch (e) {
-                            console.error(e);
+                const { data: classesData, error: classesError } = await supabase
+                    .from('live_classes')
+                    .select('*')
+                    .eq('teacher_id', userId);
+
+                if (classesError) throw classesError;
+
+                const mappedBookings = (bookingsData || []).map((b: any) => {
+                    let formattedDate = b.date;
+                    try {
+                        const parts = b.date.split('-');
+                        if (parts.length === 3) {
+                            const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                            formattedDate = format(d, 'MMMM d, yyyy');
                         }
-                        return {
-                            id: b.id,
-                            time: b.time,
-                            endTime: '1:00 PM', // default
-                            title: b.subject,
-                            location: b.student ? 'Online Lesson' : 'Online',
-                            date: formattedDate,
-                            status: 'upcoming', // default calendar status
-                            type: b.student ? 'class' : 'meeting'
-                        };
-                    });
-                    setEvents(mapped);
-                }
+                    } catch (e) {
+                        console.error(e);
+                    }
+                    return {
+                        id: b.id,
+                        time: b.time || '10:00 AM',
+                        endTime: '1:00 PM',
+                        title: b.student?.full_name ? `${b.subject || 'Lesson'} with ${b.student.full_name}` : (b.subject || 'Online Session'),
+                        location: b.student ? 'Online Lesson' : 'Online',
+                        date: formattedDate,
+                        status: b.status === 'completed' ? 'completed' : 'upcoming',
+                        type: 'class'
+                    };
+                });
+
+                const mappedClasses = (classesData || []).map((c: any) => {
+                    let formattedDate = '';
+                    let formattedTime = '10:00 AM';
+                    try {
+                        const d = new Date(c.scheduled_at || c.scheduled_start || c.created_at);
+                        formattedDate = format(d, 'MMMM d, yyyy');
+                        formattedTime = format(d, 'h:mm a');
+                    } catch (e) {
+                        console.error(e);
+                    }
+                    return {
+                        id: c.id,
+                        time: formattedTime,
+                        endTime: '1:00 PM',
+                        title: c.title || `${c.subject || 'Live'} Class`,
+                        location: 'Live Class',
+                        date: formattedDate,
+                        status: c.status === 'completed' ? 'completed' : 'upcoming',
+                        type: 'class'
+                    };
+                });
+
+                // Deduplicate by ID
+                const eventMap = new Map();
+                [...mappedBookings, ...mappedClasses].forEach(evt => eventMap.set(evt.id, evt));
+                setEvents(Array.from(eventMap.values()));
             } catch (err) {
                 console.error('Error fetching calendar events:', err);
             }

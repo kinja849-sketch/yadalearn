@@ -135,7 +135,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       .eq('id', user.id)
       .then();
 
-    const handleUnload = () => {
+    const handlePageHide = () => {
       const url = `https://yxqezrvgvfwdgrlwczea.supabase.co/rest/v1/profiles?id=eq.${user.id}`;
       const headers = {
         "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4cWV6cnZndmZ3ZGdybHdjemVhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5NTEwMTcsImV4cCI6MjA5NzUyNzAxN30.82swG99ZvWtYHwjgHxb5RlKVqwlIP6E-fevsdCz4Qzk",
@@ -147,13 +147,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       fetch(url, { method: "PATCH", headers, body, keepalive: true });
     };
 
-    window.addEventListener('beforeunload', handleUnload);
-    window.addEventListener('unload', handleUnload);
+    window.addEventListener('beforeunload', handlePageHide);
+    window.addEventListener('pagehide', handlePageHide);
 
     return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-      window.removeEventListener('unload', handleUnload);
-      handleUnload();
+      window.removeEventListener('beforeunload', handlePageHide);
+      window.removeEventListener('pagehide', handlePageHide);
+      handlePageHide();
     };
   }, [user?.id]);
 

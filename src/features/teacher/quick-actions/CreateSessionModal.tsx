@@ -22,7 +22,15 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
         return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
     };
 
-    const primarySubject = subjects && subjects.length > 0 ? subjects[0] : 'Mathematics';
+    const availableSubjects = (subjects && subjects.length > 0)
+        ? subjects
+        : ((user as any)?.subjects && (user as any).subjects.length > 0)
+            ? (user as any).subjects
+            : ['English', 'Mathematics', 'Physics', 'Chemistry', 'Biology'];
+
+    const primarySubject = availableSubjects[0] || 'English';
+
+    const [isCustomTitle, setIsCustomTitle] = useState(false);
 
     const [formData, setFormData] = useState({
         title: `${primarySubject} Class`,
@@ -36,6 +44,31 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
         maxCapacity: 15,
         repeatWeekly: false,
     });
+
+    // Synchronize initial subject and title when modal opens or teacher subjects are loaded
+    useEffect(() => {
+        if (isOpen) {
+            const currentPrimary = availableSubjects[0] || 'English';
+            setFormData(prev => ({
+                ...prev,
+                subject: currentPrimary,
+                title: `${currentPrimary} Class`,
+                startTime: getRoundedTime(),
+            }));
+            setIsCustomTitle(false);
+        }
+    }, [isOpen, subjects]);
+
+    const handleSubjectSelect = (newSubject: string) => {
+        setFormData(prev => {
+            const isAutoTitle = !isCustomTitle || !prev.title.trim() || prev.title.endsWith(' Class') || prev.title.endsWith(' Session');
+            return {
+                ...prev,
+                subject: newSubject,
+                title: isAutoTitle ? `${newSubject} Class` : prev.title,
+            };
+        });
+    };
 
     const activeSubjectsMap: Record<string, string> = {
         'Mathematics': 'functions',
@@ -148,12 +181,14 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
             const scheduledStart = new Date(`${sessionDate}T${formData.startTime}`).toISOString();
             const roomId = `class-${user.id}-${Date.now()}`;
 
+            const finalTitle = formData.title.trim() || `${formData.subject} Class`;
+
             // 1. Insert into live_classes
             const { error: liveClassError } = await supabase.from('live_classes').insert({
                 teacher_id: user.id,
                 room_id: roomId,
                 status: 'scheduled',
-                title: `${formData.subject} Session`,
+                title: finalTitle,
                 subject: formData.subject,
                 scheduled_at: scheduledStart
             });
@@ -171,7 +206,7 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                     .insert({
                         student_id: studentId,
                         teacher_id: user.id,
-                        subject: formData.title || formData.subject,
+                        subject: formData.subject,
                         date: sessionDate,
                         time: formData.startTime,
                         status: 'confirmed'
@@ -188,7 +223,7 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                 }
 
                 // Send automated chat message
-                const msgContent = `Hi! I've scheduled a new session: "${formData.title || formData.subject}". It will start on ${sessionDate} at ${formData.startTime}. [Join Meeting](/meeting/${roomId})`;
+                const msgContent = `Hi! I've scheduled a new session: "${finalTitle}". It will start on ${sessionDate} at ${formData.startTime}. [Join Meeting](/meeting/${roomId})`;
                 await supabase.from('chat_messages').insert({
                     sender_id: user.id,
                     receiver_id: studentId,
@@ -197,7 +232,7 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                 });
             }
 
-            alert(`✅ Session "${formData.title || formData.subject}" scheduled successfully with ${selectedStudents.length} student(s)!`);
+            alert(`✅ Session "${finalTitle}" scheduled successfully with ${selectedStudents.length} student(s)!`);
             onClose();
             window.location.reload();
         } catch (err: any) {
@@ -235,10 +270,13 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                                 <label className="text-sm font-bold text-gray-500 dark:text-orange-400 ml-1">Title</label>
                                 <input
                                     className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3.5 text-base font-medium text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 transition-all font-semibold"
-                                    placeholder="e.g., Math Review"
+                                    placeholder="e.g., English Class"
                                     type="text"
                                     value={formData.title}
-                                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                                    onChange={(e) => {
+                                        setIsCustomTitle(true);
+                                        setFormData({ ...formData, title: e.target.value });
+                                    }}
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -255,10 +293,10 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                             <div className="space-y-4">
                                 <h3 className="text-gray-900 dark:text-white text-lg font-bold ml-1">Subject</h3>
                                 <div className="flex gap-3 overflow-x-auto no-scrollbar pb-2">
-                                    {(subjects && subjects.length > 0 ? subjects : ['Mathematics']).map(subject => (
+                                    {availableSubjects.map(subject => (
                                         <button
                                             key={subject}
-                                            onClick={() => setFormData({ ...formData, subject: subject })}
+                                            onClick={() => handleSubjectSelect(subject)}
                                             className={`flex h-10 shrink-0 items-center justify-center gap-x-2 rounded-full pl-4 pr-5 transition-transform active:scale-95 ${formData.subject === subject
                                                     ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20'
                                                     : 'bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700/60 text-gray-600 dark:text-zinc-300'

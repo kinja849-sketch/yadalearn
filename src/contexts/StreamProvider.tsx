@@ -5,14 +5,15 @@ import { useAuth } from './AuthContext';
 interface StreamContextType {
   client: StreamVideoClient | null;
   isStreamReady: boolean;
+  isStreamConfigured: boolean;
 }
 
-const StreamContext = createContext<StreamContextType>({ client: null, isStreamReady: false });
+const StreamContext = createContext<StreamContextType>({ client: null, isStreamReady: false, isStreamConfigured: false });
 
 export const useStream = () => useContext(StreamContext);
 
 const apiKey = import.meta.env.VITE_STREAM_API_KEY || import.meta.env.STREAM_API_KEY || import.meta.env.VITE_STREAM_KEY;
-
+const isConfiguredKey = !!apiKey && apiKey !== 'YOUR_STREAM_API_KEY' && !apiKey.startsWith('YOUR_');
 
 export const StreamProvider = ({ children }: { children: React.ReactNode }) => {
   const [client, setClient] = useState<StreamVideoClient | null>(null);
@@ -29,8 +30,8 @@ export const StreamProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    if (!apiKey) {
-      console.warn('Stream API key is missing. Stream features will be disabled.');
+    if (!isConfiguredKey) {
+      console.warn('Stream API key is not configured or using default placeholder in .env. Stream features will be disabled until valid credentials from getstream.io are provided.');
       return;
     }
 
@@ -47,6 +48,11 @@ export const StreamProvider = ({ children }: { children: React.ReactNode }) => {
         if (contentType && contentType.includes('text/html')) {
           console.warn('Stream API returned HTML instead of JSON. The Netlify function might still be deploying.');
           return; // Gracefully abort without crashing
+        }
+
+        if (response.status === 503) {
+          console.warn('Stream token service reported STREAM_SECRET is not configured or placeholder in .env.');
+          return;
         }
 
         if (!response.ok) {
@@ -96,11 +102,15 @@ export const StreamProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user?.id, isLoaded]);
 
   if (!client || !isStreamReady) {
-    return <>{children}</>;
+    return (
+      <StreamContext.Provider value={{ client: null, isStreamReady: false, isStreamConfigured: isConfiguredKey }}>
+        {children}
+      </StreamContext.Provider>
+    );
   }
 
   return (
-    <StreamContext.Provider value={{ client, isStreamReady }}>
+    <StreamContext.Provider value={{ client, isStreamReady, isStreamConfigured: true }}>
       <StreamVideo client={client}>
         {children}
       </StreamVideo>

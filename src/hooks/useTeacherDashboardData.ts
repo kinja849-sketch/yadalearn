@@ -157,7 +157,7 @@ export function useTeacherDashboardData() {
                 setPendingBookings(pendingBookingsList);
                 localStorage.setItem('yadalearn-cached-teacher-pending-bookings', JSON.stringify(pendingBookingsList));
 
-                // 3. Fetch scheduled live classes for teacher's schedule
+                // 3. Fetch scheduled live classes and bookings for teacher's schedule
                 const { data: classes, error: classesError } = await supabase
                     .from('live_classes')
                     .select('*')
@@ -166,8 +166,18 @@ export function useTeacherDashboardData() {
 
                 if (classesError) throw classesError;
 
+                const { data: scheduleBookings, error: scheduleBookingsError } = await supabase
+                    .from('bookings')
+                    .select('*, student:profiles!bookings_student_id_fkey(full_name)')
+                    .eq('teacher_id', userId)
+                    .in('status', ['confirmed', 'scheduled', 'pending', 'completed']);
+
+                if (scheduleBookingsError) {
+                    console.warn('Teacher bookings fetch warning:', scheduleBookingsError);
+                }
+
                 const dbClasses = classes || [];
-                const formattedSchedule = dbClasses.map((b: any) => {
+                const classEvents = dbClasses.map((b: any) => {
                     const dateObj = new Date(b.scheduled_at || b.scheduled_start);
                     const yyyy = dateObj.getFullYear();
                     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -187,9 +197,31 @@ export function useTeacherDashboardData() {
                         subject: b.subject || 'General',
                         date: dateStr,
                         time: timeStr,
-                        status: b.status
+                        status: b.status,
+                        type: 'class'
                     };
                 });
+
+                const bookingEvents = (scheduleBookings || []).map((b: any) => {
+                    const studentName = b.student?.full_name || 'Student';
+                    return {
+                        id: b.id,
+                        title: `${b.subject || 'Session'} with ${studentName}`,
+                        subject: b.subject || 'General',
+                        date: b.date,
+                        time: b.time || '10:00 AM',
+                        status: b.status,
+                        type: 'booking'
+                    };
+                });
+
+                // Merge and deduplicate by id
+                const combinedScheduleMap = new Map();
+                [...classEvents, ...bookingEvents].forEach(evt => {
+                    combinedScheduleMap.set(evt.id, evt);
+                });
+                const formattedSchedule = Array.from(combinedScheduleMap.values());
+
                 setTeacherSchedule(formattedSchedule);
                 localStorage.setItem('yadalearn-cached-teacher-schedule', JSON.stringify(formattedSchedule));
 
@@ -217,7 +249,7 @@ export function useTeacherDashboardData() {
                         .eq('id', userId);
                 }
 
-                // Fetch today's ratings for the teacher dashboard daily display (since local midnight)
+                // Fetch today's ratings for the teacher dashboard daily display (since local midnight 12:00 AM)
                 const todayStart = new Date();
                 todayStart.setHours(0, 0, 0, 0);
 
@@ -228,6 +260,10 @@ export function useTeacherDashboardData() {
                     .eq('rated_as', 'teacher')
                     .gte('created_at', todayStart.toISOString());
 
+                // Calculate cumulative rating progress percentage towards max possible points for today
+                const targetStudentCount = Math.max(studentsList.length, 1);
+                const maxPossiblePoints = targetStudentCount * 5;
+
                 let todayAvg = 0;
                 let todayProgressPercent = 0;
                 let todayCount = 0;
@@ -236,7 +272,7 @@ export function useTeacherDashboardData() {
                     todayCount = todayRatings.length;
                     const sum = todayRatings.reduce((acc: number, curr: any) => acc + (curr.rating || 0), 0);
                     todayAvg = Math.round((sum / todayRatings.length) * 10) / 10;
-                    todayProgressPercent = Math.round((todayAvg / 5.0) * 100);
+                    todayProgressPercent = Math.min(100, Math.round((sum / maxPossiblePoints) * 100));
                 }
 
                 // 5. Fetch actual courses count

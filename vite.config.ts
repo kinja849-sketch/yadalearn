@@ -10,9 +10,13 @@ const streamTokenPlugin = () => {
       const env = loadEnv(server.config.mode, process.cwd(), '');
       const secret = env.STREAM_SECRET;
       
-      if (!secret) {
-        res.statusCode = 500;
-        return res.end(JSON.stringify({ error: "STREAM_SECRET not found in environment" }));
+      if (!secret || secret === 'YOUR_STREAM_SECRET' || secret.startsWith('YOUR_')) {
+        res.statusCode = 503;
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify({ 
+          error: "STREAM_SECRET is not configured or is using default placeholder in .env",
+          configured: false 
+        }));
       }
 
       const url = new URL(req.url, `http://${req.headers.host}`);

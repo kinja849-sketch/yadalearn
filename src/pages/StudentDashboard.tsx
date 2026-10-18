@@ -177,6 +177,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   const [allBookings, setAllBookings] = useState<any[]>([]);
   const [completedCount, setCompletedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
+  const [weeklyProgress, setWeeklyProgress] = useState<number | null>(null);
   const [detectedCountry, setDetectedCountry] = useState<string | null>(null);
   const [detectedCountryName, setDetectedCountryName] = useState<string | null>(null);
 
@@ -348,16 +349,51 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
           }
         };
 
-        const completed = bookingsData.filter((b: any) => {
+        const validBookings = bookingsData.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
+        const completed = validBookings.filter((b: any) => {
           const bookingTime = parseBookingDateTime(b.date, b.time);
-          return b.status === 'completed' || b.status === 'attended' || b.rating !== null || (bookingTime <= now && b.rating !== null && b.rating !== undefined);
+          return (b.status === 'completed' || b.status === 'attended') && bookingTime <= now;
         }).length;
 
         setCompletedCount(completed);
-        setTotalCount(bookingsData.length);
+        setTotalCount(validBookings.length);
       }
     }
     fetchBookings();
+  }, [viewAsStudentId, user?.id]);
+
+  useEffect(() => {
+    async function fetchWeeklyRating() {
+      const studentId = viewAsStudentId || user?.id;
+      if (!studentId) return;
+
+      const now = new Date();
+      const isSaturday = now.getDay() === 6; // 6 = Saturday
+
+      if (!isSaturday) {
+        setWeeklyProgress(0);
+        return;
+      }
+
+      // If Saturday, query rating submitted by teacher for this student today
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const { data: weeklyRatings } = await supabase
+        .from('session_ratings')
+        .select('rating, created_at')
+        .eq('rated_id', studentId)
+        .eq('rated_as', 'student')
+        .gte('created_at', startOfToday)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (weeklyRatings && weeklyRatings.length > 0) {
+        const weeklyPct = Math.round((weeklyRatings[0].rating / 5.0) * 100);
+        setWeeklyProgress(weeklyPct);
+      } else {
+        setWeeklyProgress(0);
+      }
+    }
+    fetchWeeklyRating();
   }, [viewAsStudentId, user?.id]);
 
   const studentSchedule = allBookings.map((b: any) => ({
@@ -373,7 +409,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   }));
 
   const nextEvent = getNextUpcomingEvent(studentSchedule);
-  const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  const progressPercent = weeklyProgress ?? 0;
 
 
   const resizeProfileImage = (base64Str: string): Promise<string> => {
@@ -893,11 +929,12 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
                     ))}
                     {getCalendarDays().map((d, idx) => {
                       const isSelected = d.dateStr === selectedDateStr;
+                      const hasPlans = studentSchedule.some((s: any) => s.date === d.dateStr);
                       return (
                         <div 
                           key={idx} 
                           onClick={() => setSelectedDateStr(d.dateStr)}
-                          className="flex items-center justify-center h-7 w-7 mx-auto cursor-pointer transition-all hover:bg-slate-100/50 dark:hover:bg-zinc-800/50 rounded-full"
+                          className="relative flex items-center justify-center h-7 w-7 mx-auto cursor-pointer transition-all hover:bg-slate-100/50 dark:hover:bg-zinc-800/50 rounded-full"
                         >
                           <span className={
                             isSelected
@@ -910,6 +947,9 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
                           }>
                             {d.date}
                           </span>
+                          {hasPlans && (
+                            <span className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${isSelected ? 'bg-purple-300' : 'bg-[#5B4A9F]'}`} />
+                          )}
                         </div>
                       );
                     })}
@@ -947,8 +987,8 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
                                 <span className="font-bold text-[10px] text-slate-400 dark:text-zinc-500 whitespace-nowrap line-through">{session.time}</span>
                                 <span className="text-xs font-semibold text-slate-555 dark:text-zinc-400 truncate flex-1">{session.title}</span>
                                 {session.rating ? (
-                                  <span className="text-[11px] font-extrabold text-amber-500 flex items-center gap-0.5 shrink-0">
-                                    ⭐ {session.rating}
+                                  <span className="text-[11px] font-extrabold text-amber-500 flex items-center gap-0.5 shrink-0" title="Teacher rated">
+                                    ⭐ Rated {session.rating}
                                   </span>
                                 ) : (
                                   <button
@@ -959,7 +999,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
                                     }}
                                     className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-[10px] rounded-lg transition-all shadow-xs cursor-pointer shrink-0"
                                   >
-                                    Rate Session
+                                    Rate Teacher
                                   </button>
                                 )}
                               </div>

@@ -1,5 +1,6 @@
 import { Home, Search, Calendar, User } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -45,9 +46,11 @@ export const BottomNav = () => {
 
   const navItems = getNavItems(savedRole);
 
-  return (
-    <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl border border-slate-200/50 dark:border-zinc-800 rounded-3xl py-2 px-6 shadow-lg z-50 flex justify-between items-center md:hidden">
-      <div className="mx-auto flex w-full max-w-7xl items-center justify-around px-2 py-3 sm:px-4">
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <nav className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[92%] max-w-md bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl border border-slate-200/60 dark:border-zinc-800 rounded-3xl py-1 px-4 shadow-2xl z-[999] flex justify-between items-center md:hidden pointer-events-auto">
+      <div className="mx-auto flex w-full max-w-7xl items-center justify-around px-2 py-2 sm:px-4">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
@@ -85,6 +88,7 @@ export const BottomNav = () => {
           );
         })}
       </div>
-    </nav>
+    </nav>,
+    document.body
   );
 };

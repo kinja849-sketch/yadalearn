@@ -118,7 +118,7 @@ const ParentProgress = () => {
           if (dayBookings.length === 0) return 20; // baseline height
           
           totalCount += dayBookings.length;
-          const completed = dayBookings.filter(b => b.status === 'completed' || b.rating !== null).length;
+          const completed = dayBookings.filter(b => b.status === 'completed' || b.status === 'attended').length;
           completedCount += completed;
           
           return 20 + Math.min(80, (completed / dayBookings.length) * 80);

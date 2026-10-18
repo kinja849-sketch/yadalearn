@@ -57,22 +57,20 @@ export default function RateTeacher() {
           return;
         }
 
-        // 4. If room_id style (e.g. class-teacherId-timestamp)
-        if (id.startsWith('class-')) {
-          const parts = id.split('-');
-          if (parts.length >= 2) {
-            const potentialTeacherId = parts[1];
-            const { data: teacherProf } = await supabase
-              .from('profiles')
-              .select('id, full_name')
-              .eq('id', potentialTeacherId)
-              .maybeSingle();
+        // 4. If room_id style containing teacher UUID (e.g. class-teacherId-timestamp)
+        const uuidMatch = id.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if (uuidMatch) {
+          const potentialTeacherId = uuidMatch[0];
+          const { data: teacherProf } = await supabase
+            .from('profiles')
+            .select('id, full_name, role')
+            .eq('id', potentialTeacherId)
+            .maybeSingle();
 
-            if (teacherProf) {
-              setTeacherId(teacherProf.id);
-              if (teacherProf.full_name) setTeacherName(teacherProf.full_name);
-              return;
-            }
+          if (teacherProf && teacherProf.role === 'teacher') {
+            setTeacherId(teacherProf.id);
+            if (teacherProf.full_name) setTeacherName(teacherProf.full_name);
+            return;
           }
         }
 
@@ -134,19 +132,42 @@ export default function RateTeacher() {
           throw ratingErr;
         }
 
-        // Update booking rating and status to completed
+        // Mark only the specific completed session as completed (without touching unrelated bookings)
         if (id) {
           if (isUuidClass) {
             await supabase
               .from('bookings')
-              .update({ rating: rating, status: 'completed' })
+              .update({ status: 'completed' })
+              .eq('id', id);
+
+            await supabase
+              .from('live_classes')
+              .update({ status: 'completed' })
               .eq('id', id);
           } else {
             await supabase
+              .from('live_classes')
+              .update({ status: 'completed' })
+              .eq('room_id', id);
+
+            // If there was an active booking today for this student and teacher, complete only that single booking
+            const todayStr = new Date().toISOString().split('T')[0];
+            const { data: activeBooking } = await supabase
               .from('bookings')
-              .update({ rating: rating, status: 'completed' })
+              .select('id')
               .eq('student_id', currentUserId)
-              .eq('teacher_id', targetTeacherId);
+              .eq('teacher_id', targetTeacherId)
+              .eq('date', todayStr)
+              .in('status', ['confirmed', 'pending'])
+              .limit(1)
+              .maybeSingle();
+
+            if (activeBooking?.id) {
+              await supabase
+                .from('bookings')
+                .update({ status: 'completed' })
+                .eq('id', activeBooking.id);
+            }
           }
         }
 

@@ -1,16 +1,17 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   StreamCall, 
   StreamTheme, 
   SpeakerLayout, 
-  PaginatedGridLayout, 
   useCallStateHooks,
   useCall,
   Call,
   StreamParticipant,
   ParticipantView,
-  useParticipantViewContext
+  useParticipantViewContext,
+  hasAudio,
+  hasScreenShare
 } from '@stream-io/video-react-sdk';
 import { useStream } from '@/contexts/StreamProvider';
 import { useAuth } from '@/contexts/AuthContext';
@@ -20,27 +21,88 @@ import '@stream-io/video-react-sdk/dist/css/styles.css';
 
 const profileAvatarCache = new Map<string, string>();
 
-// Custom Video Placeholder when participant camera is OFF
-// Displays centered circular avatar photo (or color initials circle) with participant name centered underneath
+interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar?: string;
+  text: string;
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// 1. Authoritative Meeting Timer Hook
+// ---------------------------------------------------------------------------
+const useMeetingTimer = (meetingId?: string) => {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!meetingId) return;
+    const storageKey = `yadalearn_meeting_start_${meetingId}`;
+    let startTime = parseInt(sessionStorage.getItem(storageKey) || '0', 10);
+    
+    if (!startTime || isNaN(startTime)) {
+      startTime = Date.now();
+      sessionStorage.setItem(storageKey, startTime.toString());
+    }
+
+    const updateTimer = () => {
+      const now = Date.now();
+      const diff = Math.max(0, Math.floor((now - startTime) / 1000));
+      setElapsedSeconds(diff);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [meetingId]);
+
+  const formattedTime = useMemo(() => {
+    const hours = Math.floor(elapsedSeconds / 3600);
+    const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+    const seconds = elapsedSeconds % 60;
+    
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    if (hours > 0) {
+      return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    }
+    return `${pad(minutes)}:${pad(seconds)}`;
+  }, [elapsedSeconds]);
+
+  return formattedTime;
+};
+
+// ---------------------------------------------------------------------------
+// 2. Custom Video Placeholder (Camera OFF State)
+// Matches Google Meet reference screenshots:
+// - Centered circular avatar photo or colored initials circle
+// - Name pill consistently positioned at lower-left
+// - Mic mute badge positioned at upper-right
+// - Active speaker blue highlight border
+// ---------------------------------------------------------------------------
 const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: StreamParticipant }>(
   ({ participant: propParticipant }, ref) => {
     const context = useParticipantViewContext();
     const participant = context?.participant || propParticipant;
-
     const { user } = useAuth();
+    const { useMicrophoneState } = useCallStateHooks();
+    const { isMute: isLocalMuted } = useMicrophoneState();
+
     const [avatarUrl, setAvatarUrl] = useState<string | null>(() => {
       if (!participant) return null;
-      if (participant.image) return participant.image;
       if (participant.userId === user?.id && user?.imageUrl) {
         return user.imageUrl;
       }
-      return profileAvatarCache.get(participant.userId) || null;
+      if (profileAvatarCache.has(participant.userId)) {
+        return profileAvatarCache.get(participant.userId)!;
+      }
+      return null;
     });
     const [imgError, setImgError] = useState(false);
 
     useEffect(() => {
       let isMounted = true;
-      if (!participant) return;
+      if (!participant?.userId) return;
 
       if (participant.userId === user?.id && user?.imageUrl) {
         setAvatarUrl(user.imageUrl);
@@ -48,44 +110,36 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
         return;
       }
 
-      if (participant.image) {
-        setAvatarUrl(participant.image);
-        profileAvatarCache.set(participant.userId, participant.image);
-        return;
+      if (profileAvatarCache.has(participant.userId)) {
+        setAvatarUrl(profileAvatarCache.get(participant.userId)!);
       }
 
-      if (!avatarUrl && participant.userId) {
-        if (profileAvatarCache.has(participant.userId)) {
-          setAvatarUrl(profileAvatarCache.get(participant.userId)!);
-          return;
-        }
-
-        // Fetch actual profile image from Supabase 'profiles' table for this user
-        supabase
-          .from('profiles')
-          .select('avatar_url, full_name')
-          .eq('id', participant.userId)
-          .maybeSingle()
-          .then(({ data }) => {
-            if (isMounted && data?.avatar_url) {
-              profileAvatarCache.set(participant.userId, data.avatar_url);
-              setAvatarUrl(data.avatar_url);
-            }
-          })
-          .catch(console.error);
-      }
+      supabase
+        .from('profiles')
+        .select('avatar_url')
+        .eq('id', participant.userId)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (isMounted && data?.avatar_url) {
+            profileAvatarCache.set(participant.userId, data.avatar_url);
+            setAvatarUrl(data.avatar_url);
+            setImgError(false);
+          }
+        })
+        .catch(console.error);
 
       return () => {
         isMounted = false;
       };
-    }, [participant?.userId, participant?.image, user?.id, user?.imageUrl, avatarUrl]);
+    }, [participant?.userId, user?.id, user?.imageUrl]);
 
     if (!participant) {
-      return <div ref={ref} className="w-full h-full bg-[#202124] flex items-center justify-center rounded-2xl" />;
+      return <div ref={ref} className="w-full h-full bg-[#202124] rounded-xl" />;
     }
 
     const displayAvatar = !imgError && avatarUrl ? avatarUrl : null;
-    const displayName = participant.name || 'User';
+    const isSelf = participant.userId === user?.id;
+    const displayName = participant.name || (isSelf ? (user?.name || 'You') : 'User');
 
     const initials = displayName
       .split(' ')
@@ -110,113 +164,322 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
     ) % bgColors.length;
     const avatarBg = bgColors[colorIndex];
 
-    const isMuted = participant.isMuted === true;
+    const isMuted = isSelf ? isLocalMuted : !hasAudio(participant);
+    const isSpeaking = participant.isSpeaking === true && !isMuted;
 
     return (
-      <div ref={ref} className="relative w-full h-full bg-[#202124] flex flex-col items-center justify-center p-3 select-none overflow-hidden rounded-2xl border border-white/10 shadow-inner">
+      <div 
+        ref={ref} 
+        className={`relative w-full h-full bg-[#202124] flex items-center justify-center select-none overflow-hidden rounded-xl border transition-all duration-150 ${
+          isSpeaking 
+            ? 'border-2 border-[#8ab4f8] shadow-[0_0_12px_rgba(138,180,248,0.5)]' 
+            : 'border-white/5'
+        }`}
+      >
         {/* Centered Circular Profile Avatar */}
-        <div className="relative flex flex-col items-center justify-center max-w-full max-h-full z-10">
+        <div className="relative flex items-center justify-center z-10">
           {displayAvatar ? (
             <img
               src={displayAvatar}
               alt={displayName}
               onError={() => setImgError(true)}
-              className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full object-cover shadow-2xl border-2 border-white/15 ring-2 ring-black/40"
+              className="w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 lg:w-24 lg:h-24 rounded-full object-cover shadow-xl border border-white/10"
             />
           ) : (
-            <div className={`w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full ${avatarBg} text-white font-bold text-xl sm:text-2xl md:text-3xl flex items-center justify-center shadow-2xl border-2 border-white/15 ring-2 ring-black/40`}>
+            <div className={`w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 lg:w-24 lg:h-24 rounded-full ${avatarBg} text-white font-semibold text-lg sm:text-xl md:text-2xl flex items-center justify-center shadow-xl border border-white/10`}>
               {initials}
             </div>
           )}
-
-          {/* Display Name Centered Below Circular Avatar */}
-          <span className="mt-2.5 sm:mt-3 text-white font-medium text-xs sm:text-sm md:text-base text-center truncate max-w-[150px] sm:max-w-[220px] drop-shadow-md tracking-wide">
-            {displayName}
-          </span>
         </div>
 
         {/* Top-Right Mute Status Badge */}
         {isMuted && (
-          <div className="absolute top-2.5 right-2.5 z-20 w-6 h-6 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-md pointer-events-none">
-            <span className="material-symbols-outlined text-xs">mic_off</span>
+          <div className="absolute top-2 right-2 z-20 w-6 h-6 rounded-full bg-[#202124]/90 backdrop-blur-sm flex items-center justify-center text-white/90 border border-white/10 shadow-sm pointer-events-none">
+            <span className="material-symbols-outlined text-[13px] text-white">mic_off</span>
           </div>
         )}
 
-        {/* Thin Bottom Bar Name Overlay */}
-        <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent pt-3 pb-2 px-3 flex items-center justify-between pointer-events-none">
-          <span className="text-white font-medium text-xs truncate max-w-[85%] drop-shadow-sm">
-            {displayName}
-          </span>
-        </div>
-
-        {/* Active Speaking Highlight Glow Box */}
-        {participant.isSpeaking && (
-          <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 z-30 pointer-events-none shadow-[0_0_12px_rgba(59,130,246,0.6)]" />
+        {/* Active Speaking Indicator when unmuted and speaking */}
+        {isSpeaking && !isMuted && (
+          <div className="absolute top-2 right-2 z-20 w-6 h-6 rounded-full bg-[#1a73e8] backdrop-blur-sm flex items-center justify-center text-white border border-blue-400 shadow-md pointer-events-none">
+            <span className="material-symbols-outlined text-[14px]">volume_up</span>
+          </div>
         )}
+
+        {/* Lower-Left Participant Name Pill Overlay */}
+        <div className="absolute bottom-2 left-2 z-20 max-w-[80%] flex items-center gap-1.5 pointer-events-none">
+          <div className="bg-[#202124]/85 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 flex items-center gap-1 shadow-sm">
+            <span className="text-white text-xs font-medium truncate drop-shadow-sm">
+              {displayName} {isSelf && '(You)'}
+            </span>
+            {isSpeaking && !isMuted && (
+              <span className="w-1.5 h-1.5 rounded-full bg-[#8ab4f8] animate-pulse"></span>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
 );
 CustomVideoPlaceholder.displayName = 'CustomVideoPlaceholder';
 
-// Custom Participant UI overlay for live video feed (Thin bottom bar name tag)
+// ---------------------------------------------------------------------------
+// 3. Custom Participant UI Overlay for Live Video Feed (Camera ON State)
+// ---------------------------------------------------------------------------
 const CustomParticipantViewUI = ({ participant: propParticipant }: { participant?: StreamParticipant }) => {
   const context = useParticipantViewContext();
   const participant = context?.participant || propParticipant;
+  const { user } = useAuth();
+  const { useMicrophoneState } = useCallStateHooks();
+  const { isMute: isLocalMuted } = useMicrophoneState();
 
   if (!participant) return null;
 
-  const isMuted = participant.isMuted === true;
+  const isSelf = participant.userId === user?.id;
+  const displayName = participant.name || (isSelf ? (user?.name || 'You') : 'User');
+  const isMuted = isSelf ? isLocalMuted : !hasAudio(participant);
+  const isSpeaking = participant.isSpeaking === true && !isMuted;
 
   return (
-    <div className="absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-2xl">
-      {/* Top-Right Mute Badge */}
+    <div className={`absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-xl border transition-all duration-150 ${
+      isSpeaking 
+        ? 'border-2 border-[#8ab4f8] shadow-[0_0_12px_rgba(138,180,248,0.5)]' 
+        : 'border-transparent'
+    }`}>
+      {/* Top-Right Mute Status Badge */}
       {isMuted && (
-        <div className="absolute top-2.5 right-2.5 w-6 h-6 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-white/90 border border-white/15 shadow-md">
-          <span className="material-symbols-outlined text-xs">mic_off</span>
+        <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#202124]/90 backdrop-blur-sm flex items-center justify-center text-white/90 border border-white/10 shadow-sm">
+          <span className="material-symbols-outlined text-[13px] text-white">mic_off</span>
         </div>
       )}
 
-      {/* Thin Bottom Bar Name Overlay */}
-      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent pt-3 pb-2 px-3 flex items-center justify-between">
-        <span className="text-white font-medium text-xs truncate max-w-[85%] drop-shadow-sm">
-          {participant.name || 'User'}
-        </span>
+      {/* Active Speaking Sound Badge */}
+      {isSpeaking && !isMuted && (
+        <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#1a73e8] backdrop-blur-sm flex items-center justify-center text-white border border-blue-400 shadow-md">
+          <span className="material-symbols-outlined text-[14px]">volume_up</span>
+        </div>
+      )}
+
+      {/* Lower-Left Participant Name Pill */}
+      <div className="absolute bottom-2 left-2 max-w-[80%] flex items-center gap-1.5">
+        <div className="bg-[#202124]/85 backdrop-blur-md px-2 py-0.5 rounded-md border border-white/10 flex items-center gap-1 shadow-sm">
+          <span className="text-white text-xs font-medium truncate drop-shadow-sm">
+            {displayName} {isSelf && '(You)'}
+          </span>
+          {isSpeaking && !isMuted && (
+            <span className="w-1.5 h-1.5 rounded-full bg-[#8ab4f8] animate-pulse"></span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// 4. Dynamic Mathematical Meet Gallery Grid
+// Intelligently calculates optimal rows and columns based on total participants
+// and container aspect ratio, matching Google Meet's compact rectangular layout.
+// ---------------------------------------------------------------------------
+const DynamicMeetGalleryGrid = () => {
+  const { useParticipants } = useCallStateHooks();
+  const rawParticipants = useParticipants();
+  const { user } = useAuth();
+  const [currentPage, setCurrentPage] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState({ 
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280, 
+    height: typeof window !== 'undefined' ? window.innerHeight : 720 
+  });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          setContainerSize({ width, height });
+        }
+      }
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // Place local participant at the end of gallery (or pinned first)
+  const participants = useMemo(() => {
+    const list = [...rawParticipants];
+    const selfIdx = list.findIndex(p => p.userId === user?.id);
+    if (selfIdx !== -1 && list.length > 1) {
+      const [self] = list.splice(selfIdx, 1);
+      list.push(self);
+    }
+    return list;
+  }, [rawParticipants, user?.id]);
+
+  const totalCount = participants.length;
+  // Maximum participants per visible gallery page (Google Meet desktop standard is up to 49)
+  const maxPerPage = 49;
+  const totalPages = Math.ceil(totalCount / maxPerPage);
+
+  const visibleParticipants = useMemo(() => {
+    const start = currentPage * maxPerPage;
+    return participants.slice(start, start + maxPerPage);
+  }, [participants, currentPage, maxPerPage]);
+
+  const count = visibleParticipants.length;
+  const isPortrait = containerSize.width < containerSize.height;
+
+  // Calculate dynamic column matrix matching Google Meet and Zoom proportions
+  const gridStyle = useMemo(() => {
+    let cols = 1;
+    let rows = 1;
+
+    if (isPortrait) {
+      // Mobile portrait geometry: 2 participants stack vertically (1 col x 2 rows)
+      if (count === 1) {
+        cols = 1; rows = 1;
+      } else if (count === 2) {
+        cols = 1; rows = 2;
+      } else if (count <= 4) {
+        cols = 2; rows = 2;
+      } else if (count <= 6) {
+        cols = 2; rows = 3;
+      } else if (count <= 9) {
+        cols = 3; rows = 3;
+      } else if (count <= 12) {
+        cols = 3; rows = 4;
+      } else if (count <= 16) {
+        cols = 4; rows = 4;
+      } else if (count <= 20) {
+        cols = 4; rows = 5;
+      } else if (count <= 25) {
+        cols = 5; rows = 5;
+      } else {
+        cols = 6; rows = Math.ceil(count / 6);
+      }
+    } else {
+      // Desktop / Landscape geometry: 2 participants sit side-by-side (2 cols x 1 row)
+      if (count === 1) {
+        cols = 1; rows = 1;
+      } else if (count === 2) {
+        cols = 2; rows = 1;
+      } else if (count <= 4) {
+        cols = 2; rows = 2;
+      } else if (count <= 6) {
+        cols = 3; rows = 2;
+      } else if (count <= 9) {
+        cols = 3; rows = 3;
+      } else if (count <= 12) {
+        cols = 4; rows = 3;
+      } else if (count <= 16) {
+        cols = 4; rows = 4;
+      } else if (count <= 20) {
+        cols = 5; rows = 4;
+      } else if (count <= 25) {
+        cols = 5; rows = 5;
+      } else if (count <= 30) {
+        cols = 6; rows = 5;
+      } else if (count <= 36) {
+        cols = 6; rows = 6;
+      } else if (count <= 42) {
+        cols = 7; rows = 6;
+      } else {
+        cols = 7; rows = 7; // Up to 49 participants
+      }
+    }
+
+    return {
+      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+      gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`
+    };
+  }, [count, isPortrait]);
+
+  return (
+    <div 
+      ref={containerRef}
+      className="w-full h-full min-h-0 min-w-0 flex flex-col items-center justify-center p-2 sm:p-3 overflow-hidden bg-[#131314] relative"
+    >
+      <div 
+        className="w-full h-full max-h-full grid gap-1.5 sm:gap-2 items-center justify-center"
+        style={gridStyle}
+      >
+        {visibleParticipants.map((p) => (
+          <div
+            key={p.sessionId || p.userId}
+            className="relative w-full h-full min-h-0 min-w-0 flex items-center justify-center p-0.5"
+          >
+            <div className="relative w-full h-full max-w-full max-h-full aspect-video rounded-xl overflow-hidden bg-[#202124] border border-white/5 flex items-center justify-center shadow-md">
+              <ParticipantView
+                participant={p}
+                VideoPlaceholder={CustomVideoPlaceholder}
+                ParticipantViewUI={CustomParticipantViewUI}
+                className="w-full h-full object-cover rounded-xl"
+              />
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* Active Speaking Indicator Ring */}
-      {participant.isSpeaking && (
-        <div className="absolute inset-0 rounded-2xl border-2 border-blue-500 pointer-events-none shadow-[0_0_12px_rgba(59,130,246,0.6)]" />
+      {/* Pagination controls for ultra-large meetings exceeding 49 participants */}
+      {totalPages > 1 && (
+        <div className="absolute bottom-4 z-40 bg-[#202124]/90 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 flex items-center gap-2 shadow-xl">
+          <button
+            onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            className="p-1 rounded-full text-white/80 hover:text-white disabled:opacity-30 disabled:hover:text-white/80"
+          >
+            <span className="material-symbols-outlined text-sm">chevron_left</span>
+          </button>
+          <span className="text-xs text-white/90 font-medium">
+            Page {currentPage + 1} of {totalPages}
+          </span>
+          <button
+            onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
+            disabled={currentPage === totalPages - 1}
+            className="p-1 rounded-full text-white/80 hover:text-white disabled:opacity-30 disabled:hover:text-white/80"
+          >
+            <span className="material-symbols-outlined text-sm">chevron_right</span>
+          </button>
+        </div>
       )}
     </div>
   );
 };
 
-// Responsive Meet/Zoom Style Equal Gallery Grid (No Screen Share)
-const ResponsiveGalleryGrid = () => {
+// ---------------------------------------------------------------------------
+// 5. Dedicated Screen Share Stage Layout
+// Screen share presented on dominant left stage + participant strip on right
+// ---------------------------------------------------------------------------
+const DedicatedScreenShareLayout = () => {
   const { useParticipants } = useCallStateHooks();
   const participants = useParticipants();
-  const count = participants.length;
 
-  // Determine grid columns dynamically based on participant count
-  let gridColsClass = 'grid-cols-1';
-  if (count === 2) {
-    gridColsClass = 'grid-cols-1 sm:grid-cols-2';
-  } else if (count >= 3 && count <= 4) {
-    gridColsClass = 'grid-cols-2';
-  } else if (count >= 5 && count <= 9) {
-    gridColsClass = 'grid-cols-2 sm:grid-cols-3';
-  } else if (count > 9) {
-    gridColsClass = 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4';
-  }
+  const screenShareParticipant = participants.find((p) => hasScreenShare(p));
 
   return (
-    <div className="w-full h-full min-h-0 flex items-center justify-center p-2 sm:p-3 overflow-hidden bg-zinc-950">
-      <div className={`w-full h-full max-h-full grid ${gridColsClass} auto-rows-fr gap-2 sm:gap-3 items-stretch justify-items-stretch`}>
+    <div className="w-full h-full min-h-0 flex flex-col md:flex-row p-2 sm:p-3 gap-2 bg-[#131314] overflow-hidden relative">
+      {/* Main Screen Share Dominant Stage */}
+      <div className="flex-1 min-w-0 min-h-0 w-full h-full relative overflow-hidden bg-black rounded-xl flex items-center justify-center p-1 border border-white/10">
+        {screenShareParticipant ? (
+          <ParticipantView
+            key={`${screenShareParticipant.sessionId || screenShareParticipant.userId}-screenshare`}
+            participant={screenShareParticipant}
+            trackType="screenShareTrack"
+            VideoPlaceholder={CustomVideoPlaceholder}
+            ParticipantViewUI={() => null}
+            className="w-full h-full object-contain screen-share-video rounded-lg"
+          />
+        ) : (
+          <div className="text-zinc-400 text-sm">Screen presentation loading...</div>
+        )}
+      </div>
+
+      {/* Participants Column on Desktop / Strip on Mobile (Single responsive mount prevents 0x0 unsubscription and remote video freeze) */}
+      <div className="w-full md:w-64 lg:w-72 shrink-0 h-28 md:h-full min-h-0 bg-[#202124]/90 p-2 rounded-xl border border-white/10 flex flex-row md:flex-col gap-2 overflow-x-auto md:overflow-y-auto md:overflow-x-hidden scrollbar-none">
         {participants.map((p) => (
           <div
             key={p.sessionId || p.userId}
-            className="relative w-full h-full min-h-0 rounded-2xl overflow-hidden bg-[#202124] border border-white/10 shadow-lg flex items-center justify-center"
+            className="relative shrink-0 w-28 md:w-full h-full md:h-auto md:min-h-[90px] md:aspect-video rounded-lg overflow-hidden bg-[#202124] border border-white/10 flex items-center justify-center"
           >
             <ParticipantView
               participant={p}
@@ -231,77 +494,127 @@ const ResponsiveGalleryGrid = () => {
   );
 };
 
-// Dedicated Screen Share Main Stage Layout (Screen share on left stage + equal participant grid column on right)
-const DedicatedScreenShareLayout = () => {
-  const { useParticipants } = useCallStateHooks();
-  const participants = useParticipants();
+// ---------------------------------------------------------------------------
+// 6. In-Meeting Chat Side Panel
+// Authentically recreates Google Meet's right side panel for in-call messaging
+// ---------------------------------------------------------------------------
+const InMeetingChatPanel = ({
+  messages,
+  onSendMessage,
+  onClose
+}: {
+  messages: ChatMessage[];
+  onSendMessage: (text: string) => void;
+  onClose: () => void;
+}) => {
+  const [inputText, setInputText] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Screen share participant or fall back to first participant
-  const screenShareParticipant = participants.find((p) => p.hasScreenShare) || participants[0];
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputText.trim()) return;
+    onSendMessage(inputText.trim());
+    setInputText('');
+  };
 
   return (
-    <div className="w-full h-full min-h-0 flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 bg-zinc-950 overflow-hidden relative">
-      {/* Main Screen Share Stage (Dominant surface on left/top) */}
-      <div className="flex-1 min-w-0 min-h-0 w-full h-full relative overflow-hidden bg-black rounded-2xl flex items-center justify-center p-2 border border-white/10">
-        {screenShareParticipant ? (
-          <ParticipantView
-            participant={screenShareParticipant}
-            trackType="screenShareTrack"
-            VideoPlaceholder={CustomVideoPlaceholder}
-            ParticipantViewUI={() => null}
-            className="w-full h-full object-contain screen-share-video"
-          />
-        ) : (
-          <div className="text-zinc-400 text-sm">Screen share loading...</div>
-        )}
+    <div className="w-80 sm:w-96 shrink-0 h-full bg-[#202124] border-l border-white/10 flex flex-col text-white z-30 transition-all duration-300">
+      {/* Header */}
+      <div className="p-4 border-b border-white/10 flex items-center justify-between shrink-0">
+        <h3 className="font-semibold text-base">In-call messages</h3>
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+          title="Close chat"
+        >
+          <span className="material-symbols-outlined text-lg">close</span>
+        </button>
       </div>
 
-      {/* Participants Side Column on Desktop (or Bottom Strip on Mobile) */}
-      <div className="w-full md:w-72 lg:w-80 shrink-0 h-28 md:h-full min-h-0 bg-zinc-900/80 backdrop-blur-md p-2 rounded-2xl border border-white/10 flex flex-col overflow-hidden z-20">
-        {/* On Desktop (md:), layout as vertical equal grid column. On Mobile (<md), horizontal scroll row */}
-        <div className="hidden md:grid grid-cols-1 auto-rows-fr gap-2 w-full h-full min-h-0 overflow-y-auto scrollbar-none">
-          {participants.map((p) => (
-            <div
-              key={p.sessionId || p.userId}
-              className="relative w-full h-full min-h-[100px] rounded-xl overflow-hidden bg-[#202124] border border-white/15 shadow-md flex items-center justify-center"
-            >
-              <ParticipantView
-                participant={p}
-                VideoPlaceholder={CustomVideoPlaceholder}
-                ParticipantViewUI={CustomParticipantViewUI}
-                className="w-full h-full object-cover"
-              />
-            </div>
-          ))}
-        </div>
+      {/* Google Meet Disclaimer Box */}
+      <div className="p-3 mx-4 my-3 bg-[#303134] rounded-lg text-[12px] text-zinc-300 flex items-start gap-2.5 shrink-0 border border-white/5">
+        <span className="material-symbols-outlined text-base text-zinc-400 shrink-0 mt-0.5">info</span>
+        <span>Messages can only be seen by people in the call and are deleted when the call ends.</span>
+      </div>
 
-        {/* Mobile (<md) horizontal strip fallback */}
-        <div className="flex md:hidden items-center justify-start gap-2.5 overflow-x-auto h-full w-full scrollbar-none">
-          {participants.map((p) => (
-            <div
-              key={p.sessionId || p.userId}
-              className="relative shrink-0 w-32 h-full rounded-xl overflow-hidden bg-[#202124] border border-white/15 shadow-md"
-            >
-              <ParticipantView
-                participant={p}
-                VideoPlaceholder={CustomVideoPlaceholder}
-                ParticipantViewUI={CustomParticipantViewUI}
-                className="w-full h-full object-cover"
-              />
+      {/* Messages Stream */}
+      <div className="flex-1 overflow-y-auto px-4 space-y-4">
+        {messages.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center p-4 text-zinc-500">
+            <span className="material-symbols-outlined text-4xl mb-2 text-zinc-600">forum</span>
+            <p className="text-xs">No messages yet. Send a message to start the conversation.</p>
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <div key={msg.id} className="flex flex-col space-y-1">
+              <div className="flex items-baseline justify-between">
+                <span className="font-semibold text-xs text-zinc-200">{msg.senderName}</span>
+                <span className="text-[10px] text-zinc-400">{msg.timestamp}</span>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed break-words bg-[#2d2f31] p-2.5 rounded-lg border border-white/5">
+                {msg.text}
+              </p>
             </div>
-          ))}
-        </div>
+          ))
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input Form */}
+      <div className="p-3 border-t border-white/10 shrink-0 bg-[#202124]">
+        <form onSubmit={handleSubmit} className="flex items-center gap-2">
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder="Send a message to everyone"
+            className="flex-1 bg-[#303134] hover:bg-[#3c4043] focus:bg-[#3c4043] text-white text-xs px-3.5 py-2.5 rounded-full outline-none border border-transparent focus:border-blue-400 transition-all placeholder:text-zinc-400"
+          />
+          <button
+            type="submit"
+            disabled={!inputText.trim()}
+            className="p-2 rounded-full bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 disabled:hover:bg-blue-600 transition-colors shrink-0"
+            title="Send"
+          >
+            <span className="material-symbols-outlined text-base">send</span>
+          </button>
+        </form>
       </div>
     </div>
   );
 };
 
-// Host & Moderator Controls Panel (Stream SDK powered disciplinary controls)
-const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: () => void }) => {
-  const { useParticipants } = useCallStateHooks();
+// ---------------------------------------------------------------------------
+// 7. Participants & Disciplinary Management Side Panel
+// Authentically recreates Google Meet's right side panel for connected people
+// and preserves teacher/host disciplinary controls.
+// ---------------------------------------------------------------------------
+const ParticipantsPanel = ({
+  isHost,
+  onClose
+}: {
+  isHost: boolean;
+  onClose: () => void;
+}) => {
+  const { useParticipants, useMicrophoneState } = useCallStateHooks();
+  const { isMute: isLocalMuted } = useMicrophoneState();
   const participants = useParticipants();
   const call = useCall();
   const { user } = useAuth();
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredParticipants = useMemo(() => {
+    if (!searchQuery.trim()) return participants;
+    return participants.filter(p => (p.name || '').toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [participants, searchQuery]);
 
   const handleToggleMuteAudio = async (userId: string, isCurrentlyMuted: boolean) => {
     if (!call || userId === user?.id) return;
@@ -337,7 +650,7 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
 
   const handleKickParticipant = async (userId: string) => {
     if (!call || userId === user?.id) return;
-    if (window.confirm("Are you sure you want to remove this participant from the classroom?")) {
+    if (window.confirm("Are you sure you want to remove this participant from the meeting?")) {
       try {
         await call.removeMembers([userId]).catch(() => {});
         await call.blockUser(userId).catch(() => {});
@@ -372,145 +685,154 @@ const TeacherModeratorPanel = ({ isHost, onClose }: { isHost: boolean; onClose: 
     }
   };
 
-  const handleMuteAllVideo = async () => {
-    if (!call) return;
-    try {
-      await call.muteOthers('video').catch(() => {});
-      await call.sendCustomEvent({ type: 'mute-all-video' });
-    } catch (e) {
-      console.error('Failed to mute all video:', e);
-    }
-  };
-
-  const otherParticipants = participants.filter(p => p.userId !== user?.id);
-
   return (
-    <div className="absolute top-20 right-6 w-80 sm:w-96 bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl z-50 overflow-hidden text-white animate-in slide-in-from-top-4">
-      <div className="bg-purple-950/80 p-4 border-b border-white/10 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-purple-400 text-xl">
-            {isHost ? 'gavel' : 'group'}
+    <div className="w-80 sm:w-96 shrink-0 h-full bg-[#202124] border-l border-white/10 flex flex-col text-white z-30 transition-all duration-300">
+      {/* Header */}
+      <div className="p-4 border-b border-white/10 flex items-center justify-between shrink-0">
+        <h3 className="font-semibold text-base flex items-center gap-2">
+          People
+          <span className="text-xs px-2 py-0.5 rounded-full bg-[#303134] text-zinc-300 font-normal">
+            {participants.length}
           </span>
-          <h3 className="font-bold text-sm">
-            {isHost ? `Disciplinary Control Center (${participants.length})` : `Classroom Participants (${participants.length})`}
-          </h3>
-        </div>
-        <button onClick={onClose} className="p-1 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
-          <span className="material-symbols-outlined text-base">close</span>
+        </h3>
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+          title="Close panel"
+        >
+          <span className="material-symbols-outlined text-lg">close</span>
         </button>
       </div>
 
+      {/* Host Mute All Action */}
       {isHost && (
-        <div className="p-3 border-b border-white/5 flex gap-2">
+        <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between shrink-0">
+          <span className="text-xs text-zinc-400">Classroom actions</span>
           <button
             onClick={handleMuteAllAudio}
-            title="Force mute all student microphones"
-            className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
+            className="text-xs text-blue-400 hover:text-blue-300 font-medium transition-colors"
           >
-            <span className="material-symbols-outlined text-sm">mic_off</span>
-            Mute All Audio
-          </button>
-          <button
-            onClick={handleMuteAllVideo}
-            title="Force disable all student cameras"
-            className="flex-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-sm">videocam_off</span>
-            Mute All Video
+            Mute all
           </button>
         </div>
       )}
 
-      <div className="max-h-[50vh] overflow-y-auto p-2 space-y-1">
-        {participants.length === 0 ? (
-          <p className="text-xs text-zinc-400 text-center py-6">No active participants connected.</p>
-        ) : (
-          participants.map(p => {
-            const isSelf = p.userId === user?.id;
-            const isAudioMuted = p.isMuted || !p.isAudioEnabled;
-            const isVideoMuted = !p.isVideoEnabled;
+      {/* Search Input */}
+      <div className="p-3 shrink-0">
+        <div className="relative">
+          <span className="material-symbols-outlined absolute left-3 top-2.5 text-zinc-400 text-base">search</span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search for people"
+            className="w-full bg-[#303134] text-white text-xs pl-9 pr-3 py-2 rounded-lg outline-none border border-transparent focus:border-blue-400 placeholder:text-zinc-400"
+          />
+        </div>
+      </div>
 
-            return (
-              <div key={p.userId} className="flex items-center justify-between p-2.5 rounded-2xl bg-zinc-800/40 hover:bg-zinc-800/80 transition-colors border border-white/5">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-xs font-bold shrink-0">
-                    {(p.name || 'U')[0].toUpperCase()}
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-xs font-bold truncate max-w-[120px]">
-                      {p.name || 'User'} {isSelf && '(You)'}
-                    </span>
-                    <span className="text-[10px] text-zinc-400">
-                      {p.role === 'host' ? 'Host' : 'Participant'}
-                    </span>
-                  </div>
+      {/* Participants List */}
+      <div className="flex-1 overflow-y-auto px-2 space-y-1">
+        {filteredParticipants.map(p => {
+          const isSelf = p.userId === user?.id;
+          const isAudioMuted = isSelf ? isLocalMuted : !hasAudio(p);
+          const isVideoMuted = !p.isVideoEnabled;
+
+          return (
+            <div 
+              key={p.userId} 
+              className="flex items-center justify-between p-2 rounded-lg hover:bg-[#303134]/70 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-semibold shrink-0">
+                  {(p.name || 'U')[0].toUpperCase()}
                 </div>
-
-                <div className="flex items-center gap-1">
-                  {/* Pin / Spotlight button */}
-                  <button
-                    onClick={() => handlePinParticipant(p.userId)}
-                    title={p.isPinned ? "Unpin" : "Pin Spotlight"}
-                    className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${p.isPinned ? 'bg-purple-600 text-white' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
-                  >
-                    <span className="material-symbols-outlined text-base">push_pin</span>
-                  </button>
-
-                  {/* Mute / Unmute Audio */}
-                  {isHost && !isSelf && (
-                    <button
-                      onClick={() => handleToggleMuteAudio(p.userId, isAudioMuted)}
-                      title={isAudioMuted ? "Allow to Speak / Unmute" : "Mute Audio"}
-                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${isAudioMuted ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
-                    >
-                      <span className="material-symbols-outlined text-base">{isAudioMuted ? 'mic_off' : 'mic'}</span>
-                    </button>
-                  )}
-
-                  {/* Disable / Allow Video */}
-                  {isHost && !isSelf && (
-                    <button
-                      onClick={() => handleToggleMuteVideo(p.userId, isVideoMuted)}
-                      title={isVideoMuted ? "Allow Video" : "Disable Video"}
-                      className={`p-1.5 rounded-lg text-xs font-bold transition-colors ${isVideoMuted ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : 'bg-white/10 hover:bg-white/20 text-zinc-300'}`}
-                    >
-                      <span className="material-symbols-outlined text-base">{isVideoMuted ? 'videocam_off' : 'videocam'}</span>
-                    </button>
-                  )}
-
-                  {/* Kick / Remove Member */}
-                  {isHost && !isSelf && (
-                    <button
-                      onClick={() => handleKickParticipant(p.userId)}
-                      title="Remove Participant"
-                      className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold transition-colors"
-                    >
-                      <span className="material-symbols-outlined text-base">person_remove</span>
-                    </button>
-                  )}
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-medium text-white truncate max-w-[130px] sm:max-w-[160px]">
+                    {p.name || 'User'} {isSelf && '(You)'}
+                  </span>
+                  <span className="text-[10px] text-zinc-400">
+                    {p.role === 'host' ? 'Meeting host' : 'Participant'}
+                  </span>
                 </div>
               </div>
-            );
-          })
-        )}
+
+              <div className="flex items-center gap-1 shrink-0">
+                {/* Pin Spotlight button */}
+                <button
+                  onClick={() => handlePinParticipant(p.userId)}
+                  title={p.isPinned ? "Unpin" : "Pin to stage"}
+                  className={`p-1.5 rounded-full transition-colors ${
+                    p.isPinned ? 'text-blue-400' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-base">push_pin</span>
+                </button>
+
+                {/* Mic status indicator */}
+                <span className="p-1.5 text-zinc-400">
+                  <span className="material-symbols-outlined text-base">
+                    {isAudioMuted ? 'mic_off' : 'mic'}
+                  </span>
+                </span>
+
+                {/* Host Controls */}
+                {isHost && !isSelf && (
+                  <div className="flex items-center gap-1 ml-1 border-l border-white/10 pl-1">
+                    <button
+                      onClick={() => handleToggleMuteAudio(p.userId, isAudioMuted)}
+                      title={isAudioMuted ? "Allow to speak" : "Mute participant"}
+                      className="p-1.5 rounded-full text-zinc-400 hover:text-white"
+                    >
+                      <span className="material-symbols-outlined text-base">
+                        {isAudioMuted ? 'mic_off' : 'volume_off'}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => handleKickParticipant(p.userId)}
+                      title="Remove from meeting"
+                      className="p-1.5 rounded-full text-red-400 hover:text-red-300"
+                    >
+                      <span className="material-symbols-outlined text-base">remove_circle</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 };
 
-// Single Unified Floating Control Bar (Only ONE bar rendered for the whole call)
-const SingleControlBar = ({
+// ---------------------------------------------------------------------------
+// 8. Google Meet Standard Bottom Control Center
+// Three-section layout:
+// - Left: Timer + Room identifier
+// - Center: Circular media action buttons & red end-call pill
+// - Right: Info, Participants (with count badge), Chat (with unread badge), Host actions
+// ---------------------------------------------------------------------------
+const GoogleMeetControlBar = ({
+  meetingId,
   layout,
   onToggleLayout,
-  onToggleModPanel,
-  showModPanel,
+  onToggleParticipants,
+  showParticipants,
+  onToggleChat,
+  showChat,
+  unreadCount,
   onLeave,
   isHost
 }: {
+  meetingId?: string;
   layout: 'grid' | 'speaker';
   onToggleLayout: () => void;
-  onToggleModPanel: () => void;
-  showModPanel: boolean;
+  onToggleParticipants: () => void;
+  showParticipants: boolean;
+  onToggleChat: () => void;
+  showChat: boolean;
+  unreadCount: number;
   onLeave: () => void;
   isHost: boolean;
 }) => {
@@ -520,6 +842,12 @@ const SingleControlBar = ({
   const { isMute: isCamMuted } = useCameraState();
   const { isMute: isScreenShareMuted } = useScreenShareState();
   const participants = useParticipants();
+  const timer = useMeetingTimer(meetingId);
+
+  const [handRaised, setHandRaised] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showInfoModal, setShowInfoModal] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const isSharing = !isScreenShareMuted;
 
@@ -547,117 +875,237 @@ const SingleControlBar = ({
     }
   };
 
+  const toggleHandRaise = async () => {
+    setHandRaised(prev => !prev);
+    try {
+      await call?.sendCustomEvent({
+        type: 'hand-raise',
+        raised: !handRaised
+      });
+    } catch (e) {
+      console.warn('Failed to broadcast hand-raise event:', e);
+    }
+  };
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
-    <div className="bg-zinc-900/90 backdrop-blur-xl border border-white/15 rounded-full px-4 sm:px-5 py-2.5 flex items-center gap-2 sm:gap-3 shadow-2xl pointer-events-auto">
-      {/* Mute/Unmute Mic */}
-      <button
-        onClick={toggleMic}
-        title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
-        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
-          isMicMuted
-            ? 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-600/30'
-            : 'bg-white/10 hover:bg-white/20 text-white'
-        }`}
-      >
-        <span className="material-symbols-outlined text-xl">
-          {isMicMuted ? 'mic_off' : 'mic'}
+    <div className="w-full h-[72px] shrink-0 bg-[#202124] border-t border-white/10 px-3 sm:px-6 flex items-center justify-between z-30 select-none">
+      {/* Left Section: Time / Elapsed Timer + Room Code */}
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="text-white text-sm font-medium tracking-wide">
+          {timer}
         </span>
-      </button>
-
-      {/* Camera On/Off */}
-      <button
-        onClick={toggleCam}
-        title={isCamMuted ? "Turn On Camera" : "Turn Off Camera"}
-        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
-          isCamMuted
-            ? 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-600/30'
-            : 'bg-white/10 hover:bg-white/20 text-white'
-        }`}
-      >
-        <span className="material-symbols-outlined text-xl">
-          {isCamMuted ? 'videocam_off' : 'videocam'}
+        <span className="text-zinc-500 hidden sm:inline">|</span>
+        <span className="text-zinc-300 text-xs sm:text-sm font-normal truncate max-w-[120px] sm:max-w-[200px]">
+          {meetingId || 'classroom'}
         </span>
-      </button>
+      </div>
 
-      {/* SINGLE Screen Share Button (ONLY ONE control rendered) */}
-      <button
-        onClick={toggleScreenShare}
-        title={isSharing ? "Stop Screen Share" : "Share Screen"}
-        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center ${
-          isSharing
-            ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-600/30 animate-pulse'
-            : 'bg-white/10 hover:bg-white/20 text-white'
-        }`}
-      >
-        <span className="material-symbols-outlined text-xl">
-          {isSharing ? 'cancel_presentation' : 'present_to_all'}
-        </span>
-      </button>
+      {/* Center Section: Compact Circular Controls Toolbar */}
+      <div className="flex items-center gap-2 sm:gap-3">
+        {/* Microphone Toggle */}
+        <button
+          onClick={toggleMic}
+          title={isMicMuted ? "Turn on microphone" : "Turn off microphone"}
+          className={`size-10 sm:size-11 rounded-full flex items-center justify-center transition-all ${
+            isMicMuted
+              ? 'bg-[#ea4335] hover:bg-[#d93025] text-white shadow-md'
+              : 'bg-[#3c4043] hover:bg-[#474a4d] text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-lg sm:text-xl">
+            {isMicMuted ? 'mic_off' : 'mic'}
+          </span>
+        </button>
 
-      <div className="w-[1px] h-6 bg-white/20 my-auto" />
+        {/* Camera Toggle */}
+        <button
+          onClick={toggleCam}
+          title={isCamMuted ? "Turn on camera" : "Turn off camera"}
+          className={`size-10 sm:size-11 rounded-full flex items-center justify-center transition-all ${
+            isCamMuted
+              ? 'bg-[#ea4335] hover:bg-[#d93025] text-white shadow-md'
+              : 'bg-[#3c4043] hover:bg-[#474a4d] text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-lg sm:text-xl">
+            {isCamMuted ? 'videocam_off' : 'videocam'}
+          </span>
+        </button>
 
-      {/* Layout Switcher */}
-      <button
-        onClick={onToggleLayout}
-        title={layout === 'grid' ? "Switch to Speaker View" : "Switch to Grid View"}
-        className="p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all duration-200 flex items-center justify-center"
-      >
-        <span className="material-symbols-outlined text-xl">
-          {layout === 'grid' ? 'grid_view' : 'featured_video'}
-        </span>
-      </button>
+        {/* Raise Hand Button */}
+        <button
+          onClick={toggleHandRaise}
+          title={handRaised ? "Lower hand" : "Raise hand"}
+          className={`size-10 sm:size-11 rounded-full flex items-center justify-center transition-all ${
+            handRaised
+              ? 'bg-[#8ab4f8] text-[#202124] shadow-md'
+              : 'bg-[#3c4043] hover:bg-[#474a4d] text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-lg sm:text-xl">
+            {handRaised ? 'back_hand' : 'front_hand'}
+          </span>
+        </button>
 
-      {/* Host Disciplinary Controls / Participants Panel Toggle */}
-      <button
-        onClick={onToggleModPanel}
-        title={isHost ? "Disciplinary Controls & Moderation" : "Classroom Participants"}
-        className={`p-3 rounded-full transition-all duration-200 flex items-center justify-center relative ${
-          showModPanel
-            ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-600/30'
-            : 'bg-white/10 hover:bg-white/20 text-white'
-        }`}
-      >
-        <span className="material-symbols-outlined text-xl">
-          {isHost ? 'gavel' : 'group'}
-        </span>
-        {/* Meet badge ONLY appears on screen when the host actually meets participant(s) (participants.length > 1); otherwise it doesn't appear at all */}
-        {participants.length > 1 && (
-          <span className="absolute -top-1 -right-1 bg-purple-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-zinc-900">
+        {/* Screen Share Button */}
+        <button
+          onClick={toggleScreenShare}
+          title={isSharing ? "Stop presenting" : "Present now"}
+          className={`size-10 sm:size-11 rounded-full flex items-center justify-center transition-all ${
+            isSharing
+              ? 'bg-[#8ab4f8] text-[#202124] shadow-md'
+              : 'bg-[#3c4043] hover:bg-[#474a4d] text-white'
+          }`}
+        >
+          <span className="material-symbols-outlined text-lg sm:text-xl">
+            {isSharing ? 'cancel_presentation' : 'present_to_all'}
+          </span>
+        </button>
+
+        {/* More Options Dropdown Toggle */}
+        <div className="relative">
+          <button
+            onClick={() => setShowMoreMenu(prev => !prev)}
+            title="More options"
+            className="size-10 sm:size-11 rounded-full bg-[#3c4043] hover:bg-[#474a4d] text-white flex items-center justify-center transition-all"
+          >
+            <span className="material-symbols-outlined text-lg sm:text-xl">more_vert</span>
+          </button>
+
+          {showMoreMenu && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 w-48 bg-[#202124] border border-white/10 rounded-xl shadow-2xl p-1 z-50 text-white animate-in fade-in">
+              <button
+                onClick={() => {
+                  onToggleLayout();
+                  setShowMoreMenu(false);
+                }}
+                className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-[#303134] rounded-lg transition-colors text-left"
+              >
+                <span className="material-symbols-outlined text-sm">
+                  {layout === 'grid' ? 'view_agenda' : 'grid_view'}
+                </span>
+                {layout === 'grid' ? 'Change to speaker view' : 'Change to grid view'}
+              </button>
+              <button
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(() => {});
+                  } else {
+                    document.exitFullscreen().catch(() => {});
+                  }
+                  setShowMoreMenu(false);
+                }}
+                className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-[#303134] rounded-lg transition-colors text-left"
+              >
+                <span className="material-symbols-outlined text-sm">fullscreen</span>
+                Toggle full screen
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* End Call Button (Prominent Red Pill) */}
+        <button
+          onClick={onLeave}
+          title={isHost ? "End call for everyone" : "Leave call"}
+          className="bg-[#ea4335] hover:bg-[#d93025] text-white px-4 sm:px-6 py-2.5 rounded-full flex items-center gap-1.5 shadow-md transition-all active:scale-95"
+        >
+          <span className="material-symbols-outlined text-lg sm:text-xl">call_end</span>
+        </button>
+      </div>
+
+      {/* Right Section: Utility Controls (Info, People, Chat, Host) */}
+      <div className="flex items-center gap-1 sm:gap-2">
+        {/* Meeting Info */}
+        <div className="relative">
+          <button
+            onClick={() => setShowInfoModal(prev => !prev)}
+            title="Meeting details"
+            className={`size-10 rounded-full flex items-center justify-center transition-colors ${
+              showInfoModal ? 'text-blue-400 bg-white/10' : 'text-zinc-300 hover:bg-white/10'
+            }`}
+          >
+            <span className="material-symbols-outlined text-xl">info</span>
+          </button>
+
+          {showInfoModal && (
+            <div className="absolute bottom-14 right-0 w-72 bg-[#202124] border border-white/10 rounded-xl shadow-2xl p-4 z-50 text-white animate-in fade-in">
+              <h4 className="font-semibold text-sm mb-1">Meeting details</h4>
+              <p className="text-xs text-zinc-400 mb-3">Joining info</p>
+              <div className="bg-[#303134] p-2.5 rounded-lg text-xs font-mono text-zinc-300 break-all mb-3 select-all">
+                {window.location.href}
+              </div>
+              <button
+                onClick={handleCopyLink}
+                className="w-full py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-sm">content_copy</span>
+                {copied ? 'Copied to clipboard' : 'Copy joining info'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* People / Participants Panel Toggle */}
+        <button
+          onClick={onToggleParticipants}
+          title="People"
+          className={`size-10 rounded-full flex items-center justify-center relative transition-colors ${
+            showParticipants ? 'text-blue-400 bg-white/10' : 'text-zinc-300 hover:bg-white/10'
+          }`}
+        >
+          <span className="material-symbols-outlined text-xl">group</span>
+          <span className="absolute -top-0.5 -right-0.5 text-[10px] font-bold text-zinc-200 bg-[#3c4043] px-1.5 py-0.2 rounded-full border border-black/40">
             {participants.length}
           </span>
+        </button>
+
+        {/* In-Call Chat Panel Toggle */}
+        <button
+          onClick={onToggleChat}
+          title="Chat with everyone"
+          className={`size-10 rounded-full flex items-center justify-center relative transition-colors ${
+            showChat ? 'text-blue-400 bg-white/10' : 'text-zinc-300 hover:bg-white/10'
+          }`}
+        >
+          <span className="material-symbols-outlined text-xl">chat</span>
+          {unreadCount > 0 && !showChat && (
+            <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full ring-2 ring-[#202124]"></span>
+          )}
+        </button>
+
+        {/* Host / Activities Icon (Shown for teacher/host) */}
+        {isHost && (
+          <button
+            onClick={onToggleParticipants}
+            title="Host controls"
+            className="size-10 rounded-full flex items-center justify-center text-zinc-300 hover:bg-white/10 transition-colors"
+          >
+            <span className="material-symbols-outlined text-xl">security</span>
+          </button>
         )}
-      </button>
-
-      <div className="w-[1px] h-6 bg-white/20 my-auto" />
-
-      {/* Leave / End Class Button */}
-      {isHost ? (
-        <button
-          onClick={onLeave}
-          title="End Class for Everyone"
-          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-full font-bold text-xs sm:text-sm flex items-center gap-1.5 shadow-lg shadow-red-600/30 transition-all active:scale-95 shrink-0"
-        >
-          <span className="material-symbols-outlined text-lg">call_end</span>
-          <span className="hidden sm:inline">End Class for Everyone</span>
-          <span className="sm:hidden">End</span>
-        </button>
-      ) : (
-        <button
-          onClick={onLeave}
-          title="Leave Class"
-          className="bg-red-600/80 hover:bg-red-600 text-white p-3 rounded-full transition-all duration-200 flex items-center justify-center shadow-lg shadow-red-600/20 active:scale-95"
-        >
-          <span className="material-symbols-outlined text-xl">call_end</span>
-        </button>
-      )}
+      </div>
     </div>
   );
 };
 
-// Call Layout Container (Grid vs Speaker vs Active Screen Share stage)
-const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
+// ---------------------------------------------------------------------------
+// 9. Meeting Call Layout Container
+// Handles main stage, responsive flexing when side panels open, and custom events.
+// ---------------------------------------------------------------------------
+const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meetingId?: string }) => {
   const [layout, setLayout] = useState<'grid' | 'speaker'>('grid');
-  const [showModPanel, setShowModPanel] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
   const { user } = useAuth();
   const role = user?.role || localStorage.getItem('yadalearn-user-role');
   const isHost = role === 'teacher';
@@ -666,12 +1114,28 @@ const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
   const hasScreenShare = useHasOngoingScreenShare();
   const call = useCall();
 
-  // Listen for host custom events (allow-speak, mute-audio, mute-video, mute-all-audio, mute-all-video, kick)
+  // Listen for Stream custom events (chat-message, allow-speak, mute-audio, etc.)
   useEffect(() => {
     if (!call || !user) return;
     const unsubscribe = call.on('custom', (event: any) => {
       const custom = event.custom;
       if (!custom) return;
+
+      if (custom.type === 'chat-message') {
+        const newMsg: ChatMessage = {
+          id: custom.id || `msg-${Date.now()}-${Math.random()}`,
+          senderId: custom.senderId,
+          senderName: custom.senderName || 'Participant',
+          senderAvatar: custom.senderAvatar,
+          text: custom.text,
+          timestamp: custom.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        setMessages(prev => [...prev, newMsg]);
+        if (!showChat) {
+          setUnreadCount(c => c + 1);
+        }
+        return;
+      }
 
       const isTarget = custom.targetUserId === user.id;
 
@@ -692,70 +1156,148 @@ const CallLayout = ({ handleLeave }: { handleLeave: () => void }) => {
         handleLeave();
       }
     });
+
     return () => {
       unsubscribe();
     };
-  }, [call, user?.id, isHost]);
+  }, [call, user?.id, isHost, showChat]);
 
-  // Configure high-quality screen share track parameters whenever call instance is ready
+  // Listen for Supabase Realtime broadcast chat messages
   useEffect(() => {
-    if (call?.screenShare) {
-      try {
-        call.screenShare.setSettings({
-          maxBitrate: 7500000,
-          maxFramerate: 30,
-          contentHint: 'detail',
+    if (!meetingId || !user) return;
+    const channel = supabase.channel(`room-chat-${meetingId}`);
+    channel.on('broadcast', { event: 'chat-message' }, ({ payload }) => {
+      if (payload && payload.senderId !== user.id) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === payload.id)) return prev;
+          return [...prev, payload];
         });
-      } catch (e) {
-        console.warn('Failed to configure screenShare settings:', e);
+        if (!showChat) {
+          setUnreadCount(c => c + 1);
+        }
       }
+    });
+    channel.subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [meetingId, user?.id, showChat]);
+
+  // Reset unread count when chat opens
+  const handleToggleChat = () => {
+    setShowChat(prev => {
+      const next = !prev;
+      if (next) {
+        setShowParticipants(false);
+        setUnreadCount(0);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleParticipants = () => {
+    setShowParticipants(prev => {
+      const next = !prev;
+      if (next) {
+        setShowChat(false);
+      }
+      return next;
+    });
+  };
+
+  const handleSendMessage = useCallback(async (text: string) => {
+    if (!user) return;
+    const newMsg: ChatMessage = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      senderId: user.id,
+      senderName: user.name || 'You',
+      senderAvatar: user.imageUrl,
+      text,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setMessages(prev => [...prev, newMsg]);
+
+    // Broadcast through Stream call custom event
+    if (call) {
+      call.sendCustomEvent({
+        type: 'chat-message',
+        ...newMsg
+      }).catch(err => console.warn('Failed to broadcast Stream chat message:', err));
     }
-  }, [call]);
+
+    // Broadcast through Supabase Realtime channel
+    const channel = supabase.getChannels().find(c => c.topic === `realtime:room-chat-${meetingId}`);
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'chat-message',
+        payload: newMsg
+      });
+    }
+  }, [user, call, meetingId]);
 
   return (
-    <div className="w-full h-full min-h-0 flex flex-col bg-zinc-950 overflow-hidden relative">
-      {/* Video Stream Area - Natural Fullscreen Viewport */}
-      <div className="flex-1 min-h-0 w-full overflow-hidden p-1 sm:p-2 relative flex flex-col">
-        {hasScreenShare ? (
-          <DedicatedScreenShareLayout />
-        ) : layout === 'grid' ? (
-          <ResponsiveGalleryGrid />
-        ) : (
-          <SpeakerLayout
-            participantsBarPosition="bottom"
-            VideoPlaceholder={CustomVideoPlaceholder}
-            ParticipantViewUI={CustomParticipantViewUI}
+    <div className="w-full h-full min-h-0 flex flex-col bg-[#131314] overflow-hidden relative">
+      {/* Main Content Area: Video Stage + Optional Right Side Panel */}
+      <div className="flex-1 min-h-0 w-full flex overflow-hidden relative">
+        {/* Dynamic Video Stage (Flex-1 shrinks smoothly when side panels open) */}
+        <div className="flex-1 min-h-0 min-w-0 w-full h-full relative flex flex-col overflow-hidden transition-all duration-300">
+          {hasScreenShare ? (
+            <DedicatedScreenShareLayout />
+          ) : layout === 'grid' ? (
+            <DynamicMeetGalleryGrid />
+          ) : (
+            <SpeakerLayout
+              participantsBarPosition="bottom"
+              VideoPlaceholder={CustomVideoPlaceholder}
+              ParticipantViewUI={CustomParticipantViewUI}
+            />
+          )}
+        </div>
+
+        {/* Right Drawer: In-Call Messages */}
+        {showChat && (
+          <InMeetingChatPanel
+            messages={messages}
+            onSendMessage={handleSendMessage}
+            onClose={() => setShowChat(false)}
+          />
+        )}
+
+        {/* Right Drawer: People / Host Moderation */}
+        {showParticipants && (
+          <ParticipantsPanel
+            isHost={isHost}
+            onClose={() => setShowParticipants(false)}
           />
         )}
       </div>
 
-      {/* Host / Participant Controls Drawer Panel */}
-      {showModPanel && (
-        <TeacherModeratorPanel
-          isHost={isHost}
-          onClose={() => setShowModPanel(false)}
-        />
-      )}
-
-      {/* Control Bar Reserved Container */}
-      <div className="w-full shrink-0 py-3 px-4 bg-zinc-950/95 backdrop-blur-xl border-t border-white/10 flex items-center justify-center z-30 pointer-events-auto">
-        <SingleControlBar
-          layout={layout}
-          onToggleLayout={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
-          onToggleModPanel={() => setShowModPanel(prev => !prev)}
-          showModPanel={showModPanel}
-          onLeave={handleLeave}
-          isHost={isHost}
-        />
-      </div>
+      {/* Google Meet Bottom Control Toolbar */}
+      <GoogleMeetControlBar
+        meetingId={meetingId}
+        layout={layout}
+        onToggleLayout={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
+        onToggleParticipants={handleToggleParticipants}
+        showParticipants={showParticipants}
+        onToggleChat={handleToggleChat}
+        showChat={showChat}
+        unreadCount={unreadCount}
+        onLeave={handleLeave}
+        isHost={isHost}
+      />
     </div>
   );
 };
 
+// ---------------------------------------------------------------------------
+// 10. Main Meeting Root Component
+// ---------------------------------------------------------------------------
 const Meeting = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { client, isStreamReady } = useStream();
+  const { client, isStreamReady, isStreamConfigured } = useStream();
   const { user, endSession } = useAuth();
   const [call, setCall] = useState<Call | null>(null);
   const [error, setError] = useState('');
@@ -784,7 +1326,6 @@ const Meeting = () => {
         const role = user?.role || localStorage.getItem('yadalearn-user-role');
         if (status === 'completed' || status === 'ended' || status === 'cancelled') {
           if (role === 'teacher') {
-            // Teacher (host) starting/re-opening the class: activate it
             const updateQuery = isUuid
               ? supabase.from('live_classes').update({ status: 'active' }).eq('id', id)
               : supabase.from('live_classes').update({ status: 'active' }).eq('room_id', id);
@@ -822,7 +1363,6 @@ const Meeting = () => {
       }
     });
 
-    // Listen for host ending the session – students auto-leave and navigate to rate teacher
     channel.on('broadcast', { event: 'session-ended' }, () => {
       if (role === 'student') {
         alreadyLeftRef.current = true;
@@ -863,7 +1403,7 @@ const Meeting = () => {
     };
   }, [id, user, isWaiting]);
 
-  // Join Stream Call & set host capabilities
+  // Join Stream Call & configure host capabilities
   useEffect(() => {
     if (!client || !isStreamReady || !id || isWaiting) return;
 
@@ -876,7 +1416,6 @@ const Meeting = () => {
         const role = user?.role || localStorage.getItem('yadalearn-user-role');
         const isHost = role === 'teacher';
 
-        // Assign host role to teacher when creating/joining call
         await callObj.getOrCreate({
           data: {
             created_by_id: isHost ? user.id : undefined,
@@ -903,7 +1442,6 @@ const Meeting = () => {
             console.log('Update call members host role:', e);
           }
         } else if (user?.id && id) {
-          // Record attendance for student upon joining the live class
           try {
             const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
             if (isUuid) {
@@ -916,12 +1454,15 @@ const Meeting = () => {
 
         await callObj.join();
 
-        // Configure Stream screen-share track for high quality (maxBitrate 7.5 Mbps, 30 FPS, detail content hint)
+        try {
+          callObj.setPreferredIncomingVideoResolution({ width: 1280, height: 720 });
+        } catch (e) {
+          console.warn('Failed to set preferred incoming video resolution:', e);
+        }
+
         try {
           callObj.screenShare.setSettings({
-            maxBitrate: 7500000,
             maxFramerate: 30,
-            contentHint: 'detail',
           });
         } catch (e) {
           console.warn('Failed to set screenShare settings:', e);
@@ -933,7 +1474,16 @@ const Meeting = () => {
       } catch (err: any) {
         console.error('Failed to join call', err);
         if (isMounted) {
-          setError(err.message || 'Failed to join call');
+          let readableMessage = err?.message || 'Failed to join call';
+          if (typeof readableMessage === 'string' && readableMessage.includes('AccessKeyError')) {
+            readableMessage = 'Invalid Stream Video API credentials. Please verify your VITE_STREAM_API_KEY and STREAM_SECRET in .env.';
+          } else if (typeof readableMessage === 'string' && readableMessage.trim().startsWith('{')) {
+            try {
+              const parsed = JSON.parse(readableMessage);
+              readableMessage = parsed.message || readableMessage;
+            } catch {}
+          }
+          setError(readableMessage);
         }
       }
     };
@@ -981,7 +1531,6 @@ const Meeting = () => {
   };
 
   const handleLeave = async () => {
-    // Prevent double-leave (guarded against duplicate execution)
     if (alreadyLeftRef.current) return;
     alreadyLeftRef.current = true;
 
@@ -989,7 +1538,6 @@ const Meeting = () => {
     const role = user?.role || savedRole;
     const isHost = role === 'teacher';
 
-    // 1. Mark class completed in Supabase ONLY IF user is host (teacher)
     if (isHost && id) {
       try {
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -1003,23 +1551,18 @@ const Meeting = () => {
       }
     }
 
-    // 2. End or leave the Stream call
     if (call) {
       try {
         if (isHost) {
-          // Host: endCall() ends the call for ALL participants (not just self)
           await call.endCall();
         } else {
-          // Student: leave() only removes this user
           await call.leave();
         }
       } catch (err: any) {
-        // "already been left" or "already ended" is safe to ignore
         console.warn('Leave/end call error (safe to ignore):', err?.message);
       }
     }
 
-    // 3. Host: broadcast 'session-ended' so every student client navigates away
     if (isHost && id) {
       try {
         const activeChannel = supabase.getChannels().find(c => c.topic === `realtime:room-${id}`);
@@ -1029,25 +1572,12 @@ const Meeting = () => {
             event: 'session-ended',
             payload: { endedBy: user?.id }
           });
-        } else {
-          const tempChannel = supabase.channel(`room-${id}`);
-          tempChannel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              tempChannel.send({
-                type: 'broadcast',
-                event: 'session-ended',
-                payload: { endedBy: user?.id }
-              });
-              setTimeout(() => supabase.removeChannel(tempChannel), 1000);
-            }
-          });
         }
       } catch (err) {
         console.warn('Failed to broadcast session-ended:', err);
       }
     }
 
-    // 4. Clean up auth session and navigate
     try {
       await endSession();
     } catch (err) {
@@ -1063,14 +1593,14 @@ const Meeting = () => {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-6">
-        <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl text-center">
+      <div className="min-h-screen bg-[#131314] flex flex-col items-center justify-center p-6 text-white">
+        <div className="bg-[#202124] rounded-2xl p-8 max-w-md w-full shadow-2xl text-center border border-white/10">
           <span className="material-symbols-outlined text-red-500 text-5xl mb-4">error</span>
-          <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Connection Error</h2>
-          <p className="text-sm text-gray-500 mb-6">{error}</p>
+          <h2 className="text-xl font-bold mb-2">Connection Error</h2>
+          <p className="text-sm text-zinc-400 mb-6">{error}</p>
           <button 
             onClick={() => navigate(-1)}
-            className="w-full bg-black text-white px-6 py-3 rounded-full font-bold hover:bg-gray-800 transition-colors"
+            className="w-full bg-white text-black px-6 py-3 rounded-full font-semibold hover:bg-zinc-200 transition-colors"
           >
             Go Back
           </button>
@@ -1081,13 +1611,13 @@ const Meeting = () => {
 
   if (isWaiting) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500 mb-6"></div>
-        <h2 className="text-2xl font-bold text-white mb-2">Waiting for Host</h2>
-        <p className="text-zinc-400">The teacher will let you in shortly.</p>
+      <div className="min-h-screen bg-[#131314] flex flex-col items-center justify-center p-6 text-center text-white">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-6"></div>
+        <h2 className="text-2xl font-bold mb-2">Waiting for Host</h2>
+        <p className="text-zinc-400">The meeting organizer will let you in shortly.</p>
         <button 
           onClick={() => navigate('/student-dashboard')}
-          className="mt-8 px-6 py-2 rounded-full border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors"
+          className="mt-8 px-6 py-2.5 rounded-full border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors text-sm"
         >
           Leave
         </button>
@@ -1095,12 +1625,39 @@ const Meeting = () => {
     );
   }
 
+  if (!isStreamConfigured) {
+    return (
+      <div className="min-h-screen bg-[#131314] flex flex-col items-center justify-center p-6 text-white">
+        <div className="bg-[#202124] rounded-2xl p-8 max-w-lg w-full shadow-2xl text-center border border-white/10">
+          <div className="w-16 h-16 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-center justify-center mx-auto mb-4">
+            <span className="material-symbols-outlined text-3xl">key</span>
+          </div>
+          <h2 className="text-xl font-bold mb-2">Stream Video Credentials Required</h2>
+          <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
+            Live classroom video requires valid Stream Video SDK credentials. Please configure your API key and secret in your project's <span className="text-white font-mono bg-white/10 px-1.5 py-0.5 rounded">.env</span> file:
+          </p>
+          <div className="bg-black/50 border border-white/10 rounded-xl p-4 text-left font-mono text-xs text-zinc-300 mb-6 space-y-1.5">
+            <p className="text-zinc-500"># .env</p>
+            <p><span className="text-orange-400">VITE_STREAM_API_KEY</span>=your_stream_api_key</p>
+            <p><span className="text-orange-400">STREAM_SECRET</span>=your_stream_secret</p>
+          </div>
+          <button 
+            onClick={() => navigate(-1)}
+            className="w-full bg-white text-black px-6 py-3 rounded-full font-semibold hover:bg-zinc-200 transition-colors text-sm"
+          >
+            Go Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!call) {
     return (
-      <div className="min-h-screen gradient-welcome flex items-center justify-center p-6">
+      <div className="min-h-screen bg-[#131314] flex items-center justify-center p-6 text-white">
         <div className="flex flex-col items-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mb-4"></div>
-          <p className="text-purple-900 font-medium">Connecting to secure classroom...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
+          <p className="text-zinc-300 text-sm font-medium">Joining meeting...</p>
         </div>
       </div>
     );
@@ -1109,45 +1666,26 @@ const Meeting = () => {
   const role = user?.role || localStorage.getItem('yadalearn-user-role');
 
   return (
-    <div className="fixed inset-0 w-screen h-[100dvh] bg-zinc-950 flex flex-col z-[100] overflow-hidden">
-      {/* Top Header Bar */}
-      <div className="relative w-full z-40 bg-zinc-950/90 backdrop-blur-md px-4 py-3 md:px-6 md:py-4 shrink-0 border-b border-white/10 flex items-center justify-between pointer-events-auto shadow-md">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={handleLeave}
-            className="flex size-10 items-center justify-center rounded-full hover:bg-zinc-800 text-white transition-colors"
-          >
-            <span className="material-symbols-outlined">arrow_back</span>
-          </button>
-          <div>
-            <h2 className="text-lg font-bold text-white leading-tight">Live Classroom</h2>
-            <p className="text-xs text-green-400 font-medium flex items-center gap-1">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-              </span>
-              Live Stream
-            </p>
-          </div>
-        </div>
-      </div>
-
+    <div className="fixed inset-0 w-screen h-[100dvh] bg-[#131314] flex flex-col z-[100] overflow-hidden">
       {/* Waiting Room Host Notification Panel */}
       {role === 'teacher' && waitingStudents.length > 0 && (
-        <div className="absolute top-20 right-6 w-80 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-[50vh]">
-          <div className="bg-purple-900/30 p-3 border-b border-zinc-800 flex justify-between items-center">
-            <span className="font-bold text-sm text-white">Waiting Room ({waitingStudents.length})</span>
+        <div className="absolute top-4 right-6 w-80 bg-[#202124] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-[50vh] text-white animate-in slide-in-from-top-3">
+          <div className="bg-[#303134] p-3 border-b border-white/10 flex justify-between items-center">
+            <span className="font-semibold text-xs text-white">Waiting to join ({waitingStudents.length})</span>
           </div>
-          <div className="overflow-y-auto p-2">
+          <div className="overflow-y-auto p-2 space-y-1">
             {waitingStudents.map(s => {
               const studentAvatar = s.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(s.name || s.id)}`;
               return (
-                <div key={s.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-zinc-800/50">
+                <div key={s.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5">
                   <div className="flex items-center gap-2">
-                    <img src={studentAvatar} alt={s.name} className="w-8 h-8 rounded-full object-cover border border-white/10" />
-                    <span className="text-sm font-medium text-white truncate max-w-[100px]">{s.name}</span>
+                    <img src={studentAvatar} alt={s.name} className="w-7 h-7 rounded-full object-cover border border-white/10" />
+                    <span className="text-xs font-medium text-white truncate max-w-[120px]">{s.name}</span>
                   </div>
-                  <button onClick={() => handleAdmit(s.id)} className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold rounded-full transition-colors">
+                  <button 
+                    onClick={() => handleAdmit(s.id)} 
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-full transition-colors"
+                  >
                     Admit
                   </button>
                 </div>
@@ -1158,19 +1696,19 @@ const Meeting = () => {
       )}
 
       {/* Video Stream Stage Area */}
-      <div className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden bg-zinc-950">
+      <div className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden bg-[#131314]">
         <StreamCall call={call}>
           <StreamTheme className="h-full w-full custom-stream-theme flex flex-col min-h-0">
-            <CallLayout handleLeave={handleLeave} />
+            <CallLayout handleLeave={handleLeave} meetingId={id} />
           </StreamTheme>
         </StreamCall>
       </div>
 
-      {/* Custom CSS overrides for continuous equal grid, sharp screen share, & theme resets */}
+      {/* Global Style Resets & Meet Gallery CSS Overrides */}
       <style>{`
         .custom-stream-theme {
-          --str-video-bg: #09090b;
-          --str-video-surface-color: #09090b;
+          --str-video-bg: #131314;
+          --str-video-surface-color: #202124;
           width: 100% !important;
           height: 100% !important;
           display: flex !important;
@@ -1178,7 +1716,7 @@ const Meeting = () => {
           min-height: 0 !important;
         }
 
-        /* Equal Continuous Grid layout resets */
+        /* Continuous equal grid overrides */
         .str-video__paginated-grid-layout,
         .str-video__grid-layout {
           display: flex !important;
@@ -1188,7 +1726,7 @@ const Meeting = () => {
           min-height: 0 !important;
           padding: 8px !important;
           box-sizing: border-box !important;
-          background: #09090b !important;
+          background: #131314 !important;
           overflow: hidden !important;
           flex: 1 1 0% !important;
         }
@@ -1196,18 +1734,17 @@ const Meeting = () => {
         .str-video__paginated-grid-layout__group,
         .str-video__grid-layout__wrapper {
           display: grid !important;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
           grid-auto-rows: 1fr !important;
           width: 100% !important;
           height: 100% !important;
           min-height: 0 !important;
           flex: 1 1 0% !important;
-          gap: 10px !important;
+          gap: 8px !important;
           align-items: stretch !important;
           justify-items: stretch !important;
         }
 
-        /* Participant view tiles — equal cells in continuous grid */
         .str-video__paginated-grid-layout__group > .str-video__participant-view,
         .str-video__paginated-grid-layout__group > div,
         .str-video__grid-layout__wrapper > .str-video__participant-view {
@@ -1218,106 +1755,13 @@ const Meeting = () => {
           aspect-ratio: unset !important;
         }
 
-        /* Speaker Layout overrides */
-        .str-video__speaker-layout__wrapper {
-          flex: 1 1 0% !important;
-          width: 100% !important;
-          height: 100% !important;
-          min-height: 0 !important;
-          position: relative !important;
-          display: flex !important;
-          flex-direction: column !important;
-          overflow: hidden !important;
-        }
-
-        .str-video__speaker-layout {
-          display: flex !important;
-          flex-direction: column !important;
-          width: 100% !important;
-          height: 100% !important;
-          padding: 8px !important;
-          box-sizing: border-box !important;
-          background: #09090b !important;
-          position: relative !important;
-          flex: 1 1 0% !important;
-          min-height: 0 !important;
-          overflow: hidden !important;
-        }
-
-        .str-video__speaker-layout__spotlight {
-          width: 100% !important;
-          height: 100% !important;
-          min-height: 0 !important;
-          min-width: 0 !important;
-          flex: 1 1 0% !important;
-          border-radius: 1rem !important;
-          overflow: hidden !important;
-          aspect-ratio: unset !important;
-          display: flex !important;
-          align-items: center !important;
-          justify-content: center !important;
-          background: #000000 !important;
-          position: relative !important;
-        }
-
-        .str-video__speaker-layout__spotlight .str-video__participant-view {
-          width: 100% !important;
-          height: 100% !important;
-          max-width: 100% !important;
-          max-height: 100% !important;
-          min-height: 0 !important;
-          min-width: 0 !important;
-          border-radius: 1rem !important;
-          overflow: hidden !important;
-          background: #000000 !important;
-          position: relative !important;
-        }
-
-        .str-video__participants-bar,
-        .str-video__speaker-layout__participants-bar {
-          display: flex !important;
-          flex-direction: row !important;
-          gap: 10px !important;
-          padding: 6px 12px !important;
-          align-items: center !important;
-          justify-content: center !important;
-          width: 100% !important;
-          shrink: 0 !important;
-          max-height: 115px !important;
-          min-height: 0 !important;
-          background: rgba(9, 9, 11, 0.85) !important;
-          backdrop-filter: blur(12px) !important;
-          border-radius: 1rem !important;
-          border: 1px solid rgba(255, 255, 255, 0.1) !important;
-          overflow-x: auto !important;
-        }
-
-        /* Equal thumbnail cell sizing */
-        .str-video__speaker-layout__participant-tile {
-          width: 150px !important;
-          min-width: 150px !important;
-          max-width: 150px !important;
-          height: 95px !important;
-          min-height: 95px !important;
-          max-height: 95px !important;
-          flex: 0 0 150px !important;
-          padding: 0 !important;
-          margin: 0 !important;
-          box-sizing: border-box !important;
-          border-radius: 0.85rem !important;
-          overflow: hidden !important;
-          border: 1px solid rgba(255, 255, 255, 0.15) !important;
-          background-color: #202124 !important;
-        }
-
-        /* General Participant View resets */
+        /* Participant tile surface */
         .str-video__participant-view,
         .str-video__participant-view--aspect-ratio {
-          border-radius: 1rem !important;
-          border: 1px solid rgba(255, 255, 255, 0.1) !important;
-          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
+          border-radius: 0.75rem !important;
+          border: 1px solid rgba(255, 255, 255, 0.05) !important;
           outline: none !important;
-          background-color: #09090b !important;
+          background-color: #202124 !important;
           overflow: hidden !important;
           position: relative !important;
           aspect-ratio: unset !important;
@@ -1331,7 +1775,7 @@ const Meeting = () => {
           inset: 0 !important;
         }
 
-        /* Camera feed vs Screen Share video scaling */
+        /* Video element framing */
         .str-video__video-element:not(.str-video__screen-share-video) {
           width: 100% !important;
           height: 100% !important;
@@ -1348,10 +1792,9 @@ const Meeting = () => {
           background-color: #000000 !important;
           border-radius: 0 !important;
           image-rendering: -webkit-optimize-contrast !important;
-          image-rendering: crisp-edges !important;
         }
 
-        /* Hide built-in Stream circular avatar overlays */
+        /* Hide built-in Stream circular avatar badges */
         .str-video__avatar-fallback,
         .str-video__avatar,
         .str-video__participant-avatar,
@@ -1364,4 +1807,3 @@ const Meeting = () => {
 };
 
 export default Meeting;
-

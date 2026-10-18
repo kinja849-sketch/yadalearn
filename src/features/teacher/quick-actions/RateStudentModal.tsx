@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface RateStudentModalProps {
     isOpen: boolean;
@@ -10,6 +12,8 @@ interface RateStudentModalProps {
 export const RateStudentModal = ({ isOpen, onClose, students }: RateStudentModalProps) => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [ratings, setRatings] = useState<Record<string, { rating: number; comment: string }>>({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const { user } = useAuth();
 
     const currentStudent = students[currentIndex];
 
@@ -21,10 +25,35 @@ export const RateStudentModal = ({ isOpen, onClose, students }: RateStudentModal
         }
     };
 
-    const handleSubmit = () => {
-        // Mock saving the ratings
-        alert("Weekly student evaluations submitted successfully!");
-        onClose();
+    const handleSubmit = async () => {
+        setIsSubmitting(true);
+        try {
+            const currentTeacherId = user?.id || localStorage.getItem('yadalearn-user-id');
+            const entries = Object.entries(ratings);
+
+            if (currentTeacherId && entries.length > 0) {
+                for (const [studentId, evalData] of entries) {
+                    if (evalData.rating > 0) {
+                        await supabase
+                            .from('session_ratings')
+                            .insert({
+                                rater_id: currentTeacherId,
+                                rated_id: studentId,
+                                rating: evalData.rating,
+                                feedback: evalData.comment || 'Weekly Student Evaluation',
+                                rated_as: 'student'
+                            });
+                    }
+                }
+            }
+            alert("Weekly student evaluations submitted successfully!");
+            onClose();
+        } catch (err) {
+            console.error('Error submitting weekly evaluation:', err);
+            alert("Failed to save evaluation. Please try again.");
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     const setRatingForCurrent = (val: number) => {

@@ -87,7 +87,7 @@ export default function ParentPerformance() {
                 .lt('date', format(new Date(), 'yyyy-MM-dd'));
 
             const totalPast = bookings?.length || 0;
-            const completed = bookings?.filter(b => b.status === 'completed' || b.rating !== null).length || 0;
+            const completed = bookings?.filter(b => b.status === 'completed' || b.status === 'attended').length || 0;
             const attendanceRate = totalPast > 0 ? Math.round((completed / totalPast) * 100) : 0;
 
             const { data: submissions } = await supabase

@@ -139,6 +139,15 @@ const TeacherDashboard = () => {
   };
 
   const [nextEvent, setNextEvent] = useState<any>(null);
+
+  useEffect(() => {
+    if (teacherSchedule && teacherSchedule.length > 0) {
+      const next = getNextUpcomingEvent(teacherSchedule);
+      setNextEvent(next);
+    } else {
+      setNextEvent(null);
+    }
+  }, [teacherSchedule]);
   const [activeSessionInfo, setActiveSessionInfo] = useState<{ room_id: string; title: string } | null>(null);
   const [isScanQRModalOpen, setIsScanQRModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
@@ -940,11 +949,12 @@ const TeacherDashboard = () => {
                     ))}
                     {getCalendarDays().map((d, idx) => {
                       const isSelected = d.dateStr === selectedDateStr;
+                      const hasPlans = teacherSchedule.some((s: any) => s.date === d.dateStr);
                       return (
                         <div 
                           key={idx} 
                           onClick={() => setSelectedDateStr(d.dateStr)}
-                          className="flex items-center justify-center h-7 w-7 mx-auto cursor-pointer transition-all hover:bg-slate-100/50 dark:hover:bg-zinc-800/50 rounded-full"
+                          className="relative flex items-center justify-center h-7 w-7 mx-auto cursor-pointer transition-all hover:bg-slate-100/50 dark:hover:bg-zinc-800/50 rounded-full"
                         >
                           <span className={
                             isSelected
@@ -957,6 +967,9 @@ const TeacherDashboard = () => {
                           }>
                             {d.date}
                           </span>
+                          {hasPlans && (
+                            <span className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${isSelected ? 'bg-orange-400' : 'bg-[#FF7D46]'}`} />
+                          )}
                         </div>
                       );
                     })}
