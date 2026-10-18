@@ -23,6 +23,11 @@
 
 ## Recent Completed Work
 
+- **Meeting Mobile Screen Sharing, Zero-Delay Scroll Reflection, Chat Deduplication & Realtime Raise Hand** (`src/pages/Meeting.tsx`):
+  - **In-Call Chat Deduplication**: Eliminated duplicate messages on both sender and receiver viewpoints. Excluded echo of own message to local sender (`if (custom.senderId === user.id) return;`) and strictly enforced ID deduplication (`if (prev.some(m => m.id === newMsg.id)) return prev;`) across both Stream custom events and Supabase Realtime fallback channels.
+  - **Full Realtime Raise Hand Visibility**: Built end-to-end synchronized state (`MeetingRaisedHandsContext`, `raisedHands` record) across Stream custom events and Supabase Realtime broadcast with full payload (`userId, userName, raised, timestamp`). Added animated Google Meet-style pill badges (`front_hand` + "Hand raised") to both `CustomVideoPlaceholder` (camera off) and `CustomParticipantViewUI` (camera on), added raised hand indicators and host lower-hand action to `ParticipantsPanel`, synchronized the bottom toolbar button state with "Lower hand", and added non-intrusive floating toast notifications.
+  - **Mobile Screen Share Enablement & Browser Guidance**: Bypassed mobile operating system rejection where `navigator.mediaDevices.getDisplayMedia` throws `NotSupportedError`/`TypeError` when audio is requested (`await call.screenShare.disableScreenShareAudio()`), set mobile-friendly resolution constraints (1280x720, 30fps), and provided clear guidance when third-party iOS browsers are restricted by Apple from screen capture.
+  - **Zero-Delay Scroll & Motion Reflection**: Configured WebRTC `contentHint = 'motion'` on both published and incoming screen share video tracks (`callObj.screenShare.setSettings({ contentHint: 'motion' })`, `track.contentHint = 'motion'`), enforced W3C Screen Capture spec-compliant `frameRate: { ideal: 30, max: 30 }` (preventing browser `TypeError: min constraints are not supported`), and added GPU hardware compositing layers (`transform: translateZ(0); will-change: transform; backface-visibility: hidden`) to eliminate rendering delay and preserve fluid 30 FPS scrolling.
 - **Instant Student Join Class Realtime Activation & Direct Meeting Redirect** (`src/pages/StudentDashboard.tsx`, `src/features/teacher/quick-actions/CreateSessionModal.tsx`, `src/pages/TeacherDashboard.tsx`):
   - **Identified & Eliminated Query Bottleneck**: `fetchBookings()` was fetching `teacher:profiles(avatar_url)` where the teacher's profile stored a ~180KB base64 string. For 38 bookings, each query transferred over 7MB of raw JSON over the network, causing a 12-second UI freeze. Replaced with explicit lightweight column selection (`id, full_name`).
   - **Eliminated Infinite Realtime Mutation Loop**: Removed background `update({ status: 'completed' })` inside `fetchBookings()` which was repeatedly firing the Supabase Realtime `bookingsChannel` Postgres change event on every query completion.
@@ -76,6 +81,6 @@ All environment variables are saved in `.env` (and protected from git commits vi
 ## Last verification
 
 - Ran `cmd.exe /c npx.cmd tsc --noEmit` — **0 errors**.
-- Ran `cmd.exe /c npm.cmd run build` — **built in 30.70s, 0 errors**.
+- Ran `cmd.exe /c npm.cmd run build` — **built in 34.46s, 0 errors**.
 - Verified build artifacts generated cleanly in `dist/`.
 

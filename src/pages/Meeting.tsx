@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback, useContext } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   StreamCall, 
@@ -20,6 +20,16 @@ import { supabase } from '@/lib/supabase';
 import '@stream-io/video-react-sdk/dist/css/styles.css';
 
 const profileAvatarCache = new Map<string, string>();
+
+interface RaisedHandInfo {
+  raised: boolean;
+  raisedAt: number;
+  userName: string;
+}
+
+const MeetingRaisedHandsContext = React.createContext<{
+  raisedHands: Record<string, RaisedHandInfo>;
+}>({ raisedHands: {} });
 
 interface ChatMessage {
   id: string;
@@ -164,6 +174,8 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
     ) % bgColors.length;
     const avatarBg = bgColors[colorIndex];
 
+    const { raisedHands } = useContext(MeetingRaisedHandsContext);
+    const isHandRaised = Boolean(participant?.userId && raisedHands[participant.userId]?.raised);
     const isMuted = isSelf ? isLocalMuted : !hasAudio(participant);
     const isSpeaking = participant.isSpeaking === true && !isMuted;
 
@@ -176,6 +188,14 @@ const CustomVideoPlaceholder = React.forwardRef<HTMLDivElement, { participant?: 
             : 'border-white/5'
         }`}
       >
+        {/* Top-Left Raised Hand Badge */}
+        {isHandRaised && (
+          <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 bg-[#8ab4f8] text-[#202124] px-2.5 py-1 rounded-full shadow-lg font-semibold text-xs animate-bounce pointer-events-none">
+            <span className="material-symbols-outlined text-[15px]">front_hand</span>
+            <span className="text-[11px] font-bold">Hand raised</span>
+          </div>
+        )}
+
         {/* Centered Circular Profile Avatar */}
         <div className="relative flex items-center justify-center z-10">
           {displayAvatar ? (
@@ -232,11 +252,13 @@ const CustomParticipantViewUI = ({ participant: propParticipant }: { participant
   const { user } = useAuth();
   const { useMicrophoneState } = useCallStateHooks();
   const { isMute: isLocalMuted } = useMicrophoneState();
+  const { raisedHands } = useContext(MeetingRaisedHandsContext);
 
   if (!participant) return null;
 
   const isSelf = participant.userId === user?.id;
   const displayName = participant.name || (isSelf ? (user?.name || 'You') : 'User');
+  const isHandRaised = Boolean(participant?.userId && raisedHands[participant.userId]?.raised);
   const isMuted = isSelf ? isLocalMuted : !hasAudio(participant);
   const isSpeaking = participant.isSpeaking === true && !isMuted;
 
@@ -246,6 +268,14 @@ const CustomParticipantViewUI = ({ participant: propParticipant }: { participant
         ? 'border-2 border-[#8ab4f8] shadow-[0_0_12px_rgba(138,180,248,0.5)]' 
         : 'border-transparent'
     }`}>
+      {/* Top-Left Raised Hand Badge */}
+      {isHandRaised && (
+        <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 bg-[#8ab4f8] text-[#202124] px-2.5 py-1 rounded-full shadow-lg font-semibold text-xs animate-bounce pointer-events-none">
+          <span className="material-symbols-outlined text-[15px]">front_hand</span>
+          <span className="text-[11px] font-bold">Hand raised</span>
+        </div>
+      )}
+
       {/* Top-Right Mute Status Badge */}
       {isMuted && (
         <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#202124]/90 backdrop-blur-sm flex items-center justify-center text-white/90 border border-white/10 shadow-sm">
@@ -456,6 +486,19 @@ const DedicatedScreenShareLayout = () => {
 
   const screenShareParticipant = participants.find((p) => hasScreenShare(p));
 
+  // Enforce WebRTC motion contentHint on the screen share track for zero-delay scrolling
+  useEffect(() => {
+    if (!screenShareParticipant?.screenShareStream) return;
+    try {
+      const [track] = screenShareParticipant.screenShareStream.getVideoTracks();
+      if (track && 'contentHint' in track && track.contentHint !== 'motion') {
+        track.contentHint = 'motion';
+      }
+    } catch (e) {
+      console.warn('Could not set motion contentHint on incoming screenShare track:', e);
+    }
+  }, [screenShareParticipant?.screenShareStream]);
+
   return (
     <div className="w-full h-full min-h-0 flex flex-col md:flex-row p-2 sm:p-3 gap-2 bg-[#131314] overflow-hidden relative">
       {/* Main Screen Share Dominant Stage */}
@@ -599,13 +642,16 @@ const InMeetingChatPanel = ({
 // ---------------------------------------------------------------------------
 const ParticipantsPanel = ({
   isHost,
-  onClose
+  onClose,
+  onLowerHand
 }: {
   isHost: boolean;
   onClose: () => void;
+  onLowerHand?: (userId: string) => void;
 }) => {
   const { useParticipants, useMicrophoneState } = useCallStateHooks();
   const { isMute: isLocalMuted } = useMicrophoneState();
+  const { raisedHands } = useContext(MeetingRaisedHandsContext);
   const participants = useParticipants();
   const call = useCall();
   const { user } = useAuth();
@@ -737,6 +783,7 @@ const ParticipantsPanel = ({
           const isSelf = p.userId === user?.id;
           const isAudioMuted = isSelf ? isLocalMuted : !hasAudio(p);
           const isVideoMuted = !p.isVideoEnabled;
+          const isHandRaised = Boolean(raisedHands[p.userId]?.raised);
 
           return (
             <div 
@@ -748,9 +795,17 @@ const ParticipantsPanel = ({
                   {(p.name || 'U')[0].toUpperCase()}
                 </div>
                 <div className="flex flex-col min-w-0">
-                  <span className="text-xs font-medium text-white truncate max-w-[130px] sm:max-w-[160px]">
-                    {p.name || 'User'} {isSelf && '(You)'}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-white truncate max-w-[110px] sm:max-w-[140px]">
+                      {p.name || 'User'} {isSelf && '(You)'}
+                    </span>
+                    {isHandRaised && (
+                      <span className="inline-flex items-center gap-0.5 text-[9px] text-[#8ab4f8] font-bold bg-[#8ab4f8]/15 px-1.5 py-0.2 rounded border border-[#8ab4f8]/30 shrink-0">
+                        <span className="material-symbols-outlined text-[11px]">front_hand</span>
+                        Raised
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[10px] text-zinc-400">
                     {p.role === 'host' ? 'Meeting host' : 'Participant'}
                   </span>
@@ -758,6 +813,17 @@ const ParticipantsPanel = ({
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                {/* Host Lower Hand Button */}
+                {isHost && isHandRaised && onLowerHand && (
+                  <button
+                    onClick={() => onLowerHand(p.userId)}
+                    title="Lower participant's hand"
+                    className="p-1.5 rounded-full text-[#8ab4f8] hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-base">pan_tool_alt</span>
+                  </button>
+                )}
+
                 {/* Pin Spotlight button */}
                 <button
                   onClick={() => handlePinParticipant(p.userId)}
@@ -823,7 +889,9 @@ const GoogleMeetControlBar = ({
   showChat,
   unreadCount,
   onLeave,
-  isHost
+  isHost,
+  isSelfHandRaised,
+  onToggleHandRaise
 }: {
   meetingId?: string;
   layout: 'grid' | 'speaker';
@@ -835,6 +903,8 @@ const GoogleMeetControlBar = ({
   unreadCount: number;
   onLeave: () => void;
   isHost: boolean;
+  isSelfHandRaised: boolean;
+  onToggleHandRaise: () => void;
 }) => {
   const call = useCall();
   const { useMicrophoneState, useCameraState, useScreenShareState, useParticipants } = useCallStateHooks();
@@ -844,7 +914,6 @@ const GoogleMeetControlBar = ({
   const participants = useParticipants();
   const timer = useMeetingTimer(meetingId);
 
-  const [handRaised, setHandRaised] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -868,22 +937,78 @@ const GoogleMeetControlBar = ({
   };
 
   const toggleScreenShare = async () => {
+    if (!call) return;
     try {
-      await call?.screenShare.toggle();
-    } catch (e) {
-      console.error('Screen share toggle error:', e);
-    }
-  };
+      if (isSharing) {
+        await call.screenShare.disable();
+        return;
+      }
 
-  const toggleHandRaise = async () => {
-    setHandRaised(prev => !prev);
-    try {
-      await call?.sendCustomEvent({
-        type: 'hand-raise',
-        raised: !handRaised
-      });
-    } catch (e) {
-      console.warn('Failed to broadcast hand-raise event:', e);
+      // Check mobile & browser support
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      const hasGetDisplayMedia = typeof navigator !== 'undefined' && 
+        Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+
+      if (!hasGetDisplayMedia) {
+        if (isIOS && !isSafari) {
+          alert("Screen sharing on iOS is restricted by Apple to Safari. Please open this meeting in Apple Safari to share your screen.");
+        } else {
+          alert("Screen sharing is not supported by your mobile browser. Please use Chrome on Android or Safari on iOS.");
+        }
+        return;
+      }
+
+      // Mobile devices reject getDisplayMedia when audio capture is requested.
+      // Disabling audio allows mobile OS screen capture prompts to trigger.
+      if (isMobile) {
+        await call.screenShare.disableScreenShareAudio();
+        try {
+          call.screenShare.setDefaultConstraints({
+            video: {
+              frameRate: { ideal: 30, max: 30 },
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 }
+            }
+          });
+        } catch {}
+      } else {
+        try {
+          call.screenShare.setDefaultConstraints({
+            video: {
+              frameRate: { ideal: 30, max: 30 },
+              width: { max: 1920 },
+              height: { max: 1080 }
+            }
+          });
+        } catch {}
+      }
+
+      // Set WebRTC contentHint to motion for zero-delay, smooth scrolling
+      try {
+        call.screenShare.setSettings({
+          contentHint: 'motion'
+        });
+      } catch {}
+
+      await call.screenShare.enable();
+
+      // Ensure track contentHint is set to motion
+      try {
+        const stream = call.publisher?.getMediaStream('screenShareTrack' as any);
+        const [track] = stream?.getVideoTracks() || [];
+        if (track && 'contentHint' in track) {
+          track.contentHint = 'motion';
+        }
+      } catch {}
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') {
+        // User cancelled the screen share prompt
+        return;
+      }
+      console.error('Screen share toggle error:', e);
+      alert(`Could not start screen sharing: ${e?.message || 'Unsupported or permission denied'}`);
     }
   };
 
@@ -940,16 +1065,16 @@ const GoogleMeetControlBar = ({
 
         {/* Raise Hand Button */}
         <button
-          onClick={toggleHandRaise}
-          title={handRaised ? "Lower hand" : "Raise hand"}
+          onClick={onToggleHandRaise}
+          title={isSelfHandRaised ? "Lower hand" : "Raise hand"}
           className={`size-10 sm:size-11 rounded-full flex items-center justify-center transition-all ${
-            handRaised
+            isSelfHandRaised
               ? 'bg-[#8ab4f8] text-[#202124] shadow-md'
               : 'bg-[#3c4043] hover:bg-[#474a4d] text-white'
           }`}
         >
           <span className="material-symbols-outlined text-lg sm:text-xl">
-            {handRaised ? 'back_hand' : 'front_hand'}
+            {isSelfHandRaised ? 'back_hand' : 'front_hand'}
           </span>
         </button>
 
@@ -1105,16 +1230,19 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
   const [showChat, setShowChat] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [raisedHands, setRaisedHands] = useState<Record<string, RaisedHandInfo>>({});
+  const [handRaiseToast, setHandRaiseToast] = useState<string | null>(null);
 
   const { user } = useAuth();
   const role = user?.role || localStorage.getItem('yadalearn-user-role');
   const isHost = role === 'teacher';
+  const isSelfHandRaised = Boolean(user?.id && raisedHands[user.id]?.raised);
 
   const { useHasOngoingScreenShare } = useCallStateHooks();
   const hasScreenShare = useHasOngoingScreenShare();
   const call = useCall();
 
-  // Listen for Stream custom events (chat-message, allow-speak, mute-audio, etc.)
+  // Listen for Stream custom events (chat-message, hand-raise, allow-speak, mute-audio, etc.)
   useEffect(() => {
     if (!call || !user) return;
     const unsubscribe = call.on('custom', (event: any) => {
@@ -1122,6 +1250,9 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
       if (!custom) return;
 
       if (custom.type === 'chat-message') {
+        // Exclude echo to local sender since sender already added it optimistically
+        if (custom.senderId === user.id) return;
+
         const newMsg: ChatMessage = {
           id: custom.id || `msg-${Date.now()}-${Math.random()}`,
           senderId: custom.senderId,
@@ -1130,9 +1261,32 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
           text: custom.text,
           timestamp: custom.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
-        setMessages(prev => [...prev, newMsg]);
+        setMessages(prev => {
+          if (prev.some(m => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
         if (!showChat) {
           setUnreadCount(c => c + 1);
+        }
+        return;
+      }
+
+      if (custom.type === 'hand-raise' && custom.userId) {
+        setRaisedHands(prev => {
+          if (prev[custom.userId]?.raised === custom.raised) return prev;
+          return {
+            ...prev,
+            [custom.userId]: {
+              raised: Boolean(custom.raised),
+              raisedAt: custom.timestamp || Date.now(),
+              userName: custom.userName || 'Participant'
+            }
+          };
+        });
+
+        if (custom.raised && custom.userId !== user.id) {
+          setHandRaiseToast(`${custom.userName || 'A participant'} raised hand`);
+          setTimeout(() => setHandRaiseToast(null), 4000);
         }
         return;
       }
@@ -1162,7 +1316,7 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
     };
   }, [call, user?.id, isHost, showChat]);
 
-  // Listen for Supabase Realtime broadcast chat messages
+  // Listen for Supabase Realtime broadcast messages & hand raises
   useEffect(() => {
     if (!meetingId || !user) return;
     const channel = supabase.channel(`room-chat-${meetingId}`);
@@ -1177,6 +1331,28 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
         }
       }
     });
+
+    channel.on('broadcast', { event: 'hand-raise' }, ({ payload }) => {
+      if (payload && payload.userId) {
+        setRaisedHands(prev => {
+          if (prev[payload.userId]?.raised === payload.raised) return prev;
+          return {
+            ...prev,
+            [payload.userId]: {
+              raised: Boolean(payload.raised),
+              raisedAt: payload.timestamp || Date.now(),
+              userName: payload.userName || 'Participant'
+            }
+          };
+        });
+
+        if (payload.raised && payload.userId !== user.id) {
+          setHandRaiseToast(`${payload.userName || 'A participant'} raised hand`);
+          setTimeout(() => setHandRaiseToast(null), 4000);
+        }
+      }
+    });
+
     channel.subscribe();
     return () => {
       supabase.removeChannel(channel);
@@ -1216,7 +1392,11 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setMessages(prev => [...prev, newMsg]);
+    // Optimistically update local sender messages once
+    setMessages(prev => {
+      if (prev.some(m => m.id === newMsg.id)) return prev;
+      return [...prev, newMsg];
+    });
 
     // Broadcast through Stream call custom event
     if (call) {
@@ -1237,57 +1417,137 @@ const CallLayout = ({ handleLeave, meetingId }: { handleLeave: () => void; meeti
     }
   }, [user, call, meetingId]);
 
+  const handleToggleHandRaise = useCallback(async () => {
+    if (!user) return;
+    const isCurrentlyRaised = Boolean(raisedHands[user.id]?.raised);
+    const nextRaised = !isCurrentlyRaised;
+    const payload = {
+      type: 'hand-raise',
+      userId: user.id,
+      userName: user.name || 'Participant',
+      raised: nextRaised,
+      timestamp: Date.now()
+    };
+
+    setRaisedHands(prev => ({
+      ...prev,
+      [user.id]: {
+        raised: nextRaised,
+        raisedAt: Date.now(),
+        userName: user.name || 'Participant'
+      }
+    }));
+
+    if (call) {
+      call.sendCustomEvent(payload).catch(err => console.warn('Stream hand-raise broadcast error:', err));
+    }
+
+    const channel = supabase.getChannels().find(c => c.topic === `realtime:room-chat-${meetingId}`);
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'hand-raise',
+        payload
+      });
+    }
+  }, [user, raisedHands, call, meetingId]);
+
+  const handleLowerParticipantHand = useCallback(async (targetUserId: string) => {
+    const payload = {
+      type: 'hand-raise',
+      userId: targetUserId,
+      userName: raisedHands[targetUserId]?.userName || 'Participant',
+      raised: false,
+      timestamp: Date.now()
+    };
+
+    setRaisedHands(prev => ({
+      ...prev,
+      [targetUserId]: {
+        raised: false,
+        raisedAt: Date.now(),
+        userName: prev[targetUserId]?.userName || 'Participant'
+      }
+    }));
+
+    if (call) {
+      call.sendCustomEvent(payload).catch(err => console.warn('Stream hand-raise lower error:', err));
+    }
+
+    const channel = supabase.getChannels().find(c => c.topic === `realtime:room-chat-${meetingId}`);
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'hand-raise',
+        payload
+      });
+    }
+  }, [call, meetingId, raisedHands]);
+
   return (
-    <div className="w-full h-full min-h-0 flex flex-col bg-[#131314] overflow-hidden relative">
-      {/* Main Content Area: Video Stage + Optional Right Side Panel */}
-      <div className="flex-1 min-h-0 w-full flex overflow-hidden relative">
-        {/* Dynamic Video Stage (Flex-1 shrinks smoothly when side panels open) */}
-        <div className="flex-1 min-h-0 min-w-0 w-full h-full relative flex flex-col overflow-hidden transition-all duration-300">
-          {hasScreenShare ? (
-            <DedicatedScreenShareLayout />
-          ) : layout === 'grid' ? (
-            <DynamicMeetGalleryGrid />
-          ) : (
-            <SpeakerLayout
-              participantsBarPosition="bottom"
-              VideoPlaceholder={CustomVideoPlaceholder}
-              ParticipantViewUI={CustomParticipantViewUI}
+    <MeetingRaisedHandsContext.Provider value={{ raisedHands }}>
+      <div className="w-full h-full min-h-0 flex flex-col bg-[#131314] overflow-hidden relative">
+        {/* Floating Hand Raise Notification */}
+        {handRaiseToast && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-[#8ab4f8] text-[#202124] px-4 py-2 rounded-full font-semibold text-xs flex items-center gap-2 shadow-2xl animate-in fade-in slide-in-from-top-2 pointer-events-none">
+            <span className="material-symbols-outlined text-base">front_hand</span>
+            <span>{handRaiseToast}</span>
+          </div>
+        )}
+
+        {/* Main Content Area: Video Stage + Optional Right Side Panel */}
+        <div className="flex-1 min-h-0 w-full flex overflow-hidden relative">
+          {/* Dynamic Video Stage (Flex-1 shrinks smoothly when side panels open) */}
+          <div className="flex-1 min-h-0 min-w-0 w-full h-full relative flex flex-col overflow-hidden transition-all duration-300">
+            {hasScreenShare ? (
+              <DedicatedScreenShareLayout />
+            ) : layout === 'grid' ? (
+              <DynamicMeetGalleryGrid />
+            ) : (
+              <SpeakerLayout
+                participantsBarPosition="bottom"
+                VideoPlaceholder={CustomVideoPlaceholder}
+                ParticipantViewUI={CustomParticipantViewUI}
+              />
+            )}
+          </div>
+
+          {/* Right Drawer: In-Call Messages */}
+          {showChat && (
+            <InMeetingChatPanel
+              messages={messages}
+              onSendMessage={handleSendMessage}
+              onClose={() => setShowChat(false)}
+            />
+          )}
+
+          {/* Right Drawer: People / Host Moderation */}
+          {showParticipants && (
+            <ParticipantsPanel
+              isHost={isHost}
+              onClose={() => setShowParticipants(false)}
+              onLowerHand={handleLowerParticipantHand}
             />
           )}
         </div>
 
-        {/* Right Drawer: In-Call Messages */}
-        {showChat && (
-          <InMeetingChatPanel
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            onClose={() => setShowChat(false)}
-          />
-        )}
-
-        {/* Right Drawer: People / Host Moderation */}
-        {showParticipants && (
-          <ParticipantsPanel
-            isHost={isHost}
-            onClose={() => setShowParticipants(false)}
-          />
-        )}
+        {/* Google Meet Bottom Control Toolbar */}
+        <GoogleMeetControlBar
+          meetingId={meetingId}
+          layout={layout}
+          onToggleLayout={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
+          onToggleParticipants={handleToggleParticipants}
+          showParticipants={showParticipants}
+          onToggleChat={handleToggleChat}
+          showChat={showChat}
+          unreadCount={unreadCount}
+          onLeave={handleLeave}
+          isHost={isHost}
+          isSelfHandRaised={isSelfHandRaised}
+          onToggleHandRaise={handleToggleHandRaise}
+        />
       </div>
-
-      {/* Google Meet Bottom Control Toolbar */}
-      <GoogleMeetControlBar
-        meetingId={meetingId}
-        layout={layout}
-        onToggleLayout={() => setLayout(l => l === 'grid' ? 'speaker' : 'grid')}
-        onToggleParticipants={handleToggleParticipants}
-        showParticipants={showParticipants}
-        onToggleChat={handleToggleChat}
-        showChat={showChat}
-        unreadCount={unreadCount}
-        onLeave={handleLeave}
-        isHost={isHost}
-      />
-    </div>
+    </MeetingRaisedHandsContext.Provider>
   );
 };
 
@@ -1461,11 +1721,31 @@ const Meeting = () => {
         }
 
         try {
+          const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+          if (isMobileDevice) {
+            await callObj.screenShare.disableScreenShareAudio();
+            callObj.screenShare.setDefaultConstraints({
+              video: {
+                frameRate: { ideal: 30, max: 30 },
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 }
+              }
+            });
+          } else {
+            callObj.screenShare.setDefaultConstraints({
+              video: {
+                frameRate: { ideal: 30, max: 30 },
+                width: { max: 1920 },
+                height: { max: 1080 }
+              }
+            });
+          }
+
           callObj.screenShare.setSettings({
-            maxFramerate: 30,
+            contentHint: 'motion',
           });
         } catch (e) {
-          console.warn('Failed to set screenShare settings:', e);
+          console.warn('Failed to configure screenShare settings:', e);
         }
         
         if (isMounted) {
@@ -1792,6 +2072,9 @@ const Meeting = () => {
           background-color: #000000 !important;
           border-radius: 0 !important;
           image-rendering: -webkit-optimize-contrast !important;
+          transform: translateZ(0) !important;
+          will-change: transform !important;
+          backface-visibility: hidden !important;
         }
 
         /* Hide built-in Stream circular avatar badges */
