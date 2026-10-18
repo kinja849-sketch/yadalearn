@@ -149,6 +149,115 @@ const TeacherDashboard = () => {
     }
   }, [teacherSchedule]);
   const [activeSessionInfo, setActiveSessionInfo] = useState<{ room_id: string; title: string } | null>(null);
+  const [isStartingClass, setIsStartingClass] = useState(false);
+
+  const handleStartClassDirectly = async () => {
+    if (!user?.id || isStartingClass) return;
+    setIsStartingClass(true);
+
+    try {
+      const d = new Date();
+      const todayStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+
+      // 1. Check if there's already an active, live, or scheduled class for this teacher
+      const { data: existingClasses } = await supabase
+        .from('live_classes')
+        .select('id, room_id, status, title, subject')
+        .eq('teacher_id', user.id)
+        .in('status', ['live', 'active', 'scheduled'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      let roomName = '';
+      if (existingClasses && existingClasses.length > 0) {
+        const targetClass = existingClasses[0];
+        roomName = targetClass.room_id || `class-${user.id}-${todayStr}`;
+        
+        // Update its status to live
+        await supabase
+          .from('live_classes')
+          .update({ status: 'live', room_id: roomName })
+          .eq('id', targetClass.id);
+      } else {
+        // Fallback: check if nextEvent has a room or generate a deterministic room
+        roomName = nextEvent?.room_id || (nextEvent?.id && typeof nextEvent.id === 'string' && nextEvent.id.startsWith('class-') ? nextEvent.id : `class-${user.id}-${todayStr}`);
+        const teacherSubject = (user as any)?.subjects?.[0] || 'Live Session';
+        await supabase.from('live_classes').insert({
+          teacher_id: user.id,
+          room_id: roomName,
+          status: 'live',
+          scheduled_at: new Date().toISOString(),
+          title: nextEvent?.title || `${teacherSubject} Class`,
+          subject: nextEvent?.subject || teacherSubject
+        });
+      }
+
+      // 2. Ensure today's bookings for this teacher and linked students are confirmed
+      try {
+        await supabase
+          .from('bookings')
+          .update({ status: 'confirmed' })
+          .eq('teacher_id', user.id)
+          .eq('date', todayStr);
+      } catch (bErr) {
+        console.warn('Booking status sync warning:', bErr);
+      }
+
+      // 3. Broadcast to linked students and today's booked students so student dashboards immediately activate
+      try {
+        const [linksRes, todayBookingsRes] = await Promise.all([
+          supabase.from('teacher_student_links').select('student_id').eq('teacher_id', user.id),
+          supabase.from('bookings').select('student_id').eq('teacher_id', user.id).eq('date', todayStr)
+        ]);
+
+        const studentIdSet = new Set<string>();
+        if (linksRes.data) {
+          linksRes.data.forEach((l: any) => { if (l.student_id) studentIdSet.add(l.student_id); });
+        }
+        if (todayBookingsRes.data) {
+          todayBookingsRes.data.forEach((b: any) => { if (b.student_id) studentIdSet.add(b.student_id); });
+        }
+
+        const studentIds = Array.from(studentIdSet);
+        studentIds.forEach((sId: string) => {
+          const ch = supabase.channel(`student-live-session-${sId}`);
+          ch.subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              ch.send({
+                type: 'broadcast',
+                event: 'session_created',
+                payload: { roomId: roomName, teacherId: user.id, studentId: sId, title: nextEvent?.title || 'Live Class' }
+              });
+              setTimeout(() => supabase.removeChannel(ch), 1000);
+            }
+          });
+        });
+
+        // Global broadcast redundancy
+        const globalCh = supabase.channel('yadalearn-live-sessions');
+        globalCh.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            globalCh.send({
+              type: 'broadcast',
+              event: 'session_created',
+              payload: { roomId: roomName, teacherId: user.id, title: nextEvent?.title || 'Live Class' }
+            });
+            setTimeout(() => supabase.removeChannel(globalCh), 1000);
+          }
+        });
+      } catch (bcErr) {
+        console.warn('Broadcast to students warning:', bcErr);
+      }
+
+      // Immediately navigate directly into the meeting
+      navigate(`/meeting/${roomName}`);
+    } catch (err) {
+      console.error('Failed to start class directly:', err);
+      alert('Could not start class. Please try again.');
+    } finally {
+      setIsStartingClass(false);
+    }
+  };
   const [isScanQRModalOpen, setIsScanQRModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -865,13 +974,15 @@ const TeacherDashboard = () => {
             
             <div className="grid grid-cols-3 gap-4">
               <div
-                onClick={() => setActiveModal('start-class')}
+                onClick={handleStartClassDirectly}
                 className="bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 p-5 rounded-[1.5rem] border border-white/60 dark:border-zinc-700/20 shadow-sm flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all text-center h-28"
               >
                 <div className="w-10 h-10 rounded-full bg-[#FF7D46]/10 flex items-center justify-center">
                   <Play className="h-5 w-5 text-[#FF7D46] dark:text-orange-450" />
                 </div>
-                <p className="text-xs font-bold text-slate-750 dark:text-zinc-200">Start Class</p>
+                <p className="text-xs font-bold text-slate-750 dark:text-zinc-200">
+                  {isStartingClass ? 'Starting...' : 'Start Class'}
+                </p>
               </div>
 
               <div

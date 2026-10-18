@@ -132,12 +132,12 @@ export default function RateTeacher() {
           throw ratingErr;
         }
 
-        // Mark only the specific completed session as completed (without touching unrelated bookings)
+        // Mark only the specific completed session as completed with the submitted rating
         if (id) {
           if (isUuidClass) {
             await supabase
               .from('bookings')
-              .update({ status: 'completed' })
+              .update({ status: 'completed', rating: rating })
               .eq('id', id);
 
             await supabase
@@ -150,23 +150,46 @@ export default function RateTeacher() {
               .update({ status: 'completed' })
               .eq('room_id', id);
 
-            // If there was an active booking today for this student and teacher, complete only that single booking
+            // Find the specific booking for this student and teacher
             const todayStr = new Date().toISOString().split('T')[0];
-            const { data: activeBooking } = await supabase
+            let targetBookingId: string | null = null;
+
+            // 1. First search for today's booking that has no rating yet
+            const { data: todayUnrated } = await supabase
               .from('bookings')
               .select('id')
               .eq('student_id', currentUserId)
               .eq('teacher_id', targetTeacherId)
               .eq('date', todayStr)
-              .in('status', ['confirmed', 'pending'])
+              .is('rating', null)
+              .order('created_at', { ascending: false })
               .limit(1)
               .maybeSingle();
 
-            if (activeBooking?.id) {
+            if (todayUnrated?.id) {
+              targetBookingId = todayUnrated.id;
+            } else {
+              // 2. Fallback to any recent unrated booking for this student and teacher
+              const { data: recentUnrated } = await supabase
+                .from('bookings')
+                .select('id')
+                .eq('student_id', currentUserId)
+                .eq('teacher_id', targetTeacherId)
+                .is('rating', null)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              if (recentUnrated?.id) {
+                targetBookingId = recentUnrated.id;
+              }
+            }
+
+            if (targetBookingId) {
               await supabase
                 .from('bookings')
-                .update({ status: 'completed' })
-                .eq('id', activeBooking.id);
+                .update({ status: 'completed', rating: rating })
+                .eq('id', targetBookingId);
             }
           }
         }

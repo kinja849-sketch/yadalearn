@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
@@ -30,6 +30,14 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   const navigate = useNavigate();
   const location = useLocation();
   const { user, refreshUser, logout } = useAuth();
+  const currentStudentId = viewAsStudentId || user?.id || (() => {
+    try {
+      const cached = localStorage.getItem('yadalearn-user');
+      return cached ? JSON.parse(cached).id : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
   const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<string | null>(null);
@@ -40,24 +48,170 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { topTeachers, upcomingClasses, unratedClasses, loading } = useDashboardData(viewAsStudentId);
   const [liveClassInfo, setLiveClassInfo] = useState<{ room_id: string; teacher_id: string } | null>(null);
+  const [allBookings, setAllBookings] = useState<any[]>([]);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+
+  const fetchBookings = useCallback(async () => {
+    if (!currentStudentId) return;
+
+    // Fetch bookings and submitted teacher ratings in parallel
+    const [bookingsRes, ratingsRes] = await Promise.all([
+      supabase
+        .from('bookings')
+        .select(`
+          id,
+          subject,
+          date,
+          time,
+          status,
+          rating,
+          teacher_id,
+          created_at,
+          teacher:profiles!bookings_teacher_id_fkey(id, full_name, avatar_url)
+        `)
+        .eq('student_id', currentStudentId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('session_ratings')
+        .select('id, class_id, rated_id, rating, created_at')
+        .eq('rater_id', currentStudentId)
+        .eq('rated_as', 'teacher')
+        .order('created_at', { ascending: false })
+    ]);
+
+    const bookingsData = bookingsRes.data;
+    const ratingsData = ratingsRes.data || [];
+    
+    if (bookingsData) {
+      const now = new Date();
+      const parseBookingDateTime = (dateStr: string, timeStr: string) => {
+        try {
+          const [year, month, day] = dateStr.split('-').map(Number);
+          const match12 = timeStr.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+          const match24 = timeStr.match(/^(\d+):(\d+)$/);
+          let hours = 0; let minutes = 0;
+          if (match12) {
+            hours = Number(match12[1]);
+            minutes = Number(match12[2]);
+            const ampm = match12[3].toUpperCase();
+            if (ampm === 'PM' && hours < 12) hours += 12;
+            if (ampm === 'AM' && hours === 12) hours = 0;
+          } else if (match24) {
+            hours = Number(match24[1]);
+            minutes = Number(match24[2]);
+          }
+          return new Date(year, month - 1, day, hours, minutes);
+        } catch (e) {
+          return new Date(0);
+        }
+      };
+
+      setAllBookings(bookingsData);
+      
+      // Derive active session for instant Join Class button activation
+      const activeBooking = bookingsData.find((b: any) => 
+        (b.status === 'confirmed' || b.status === 'active') && 
+        b.rating == null
+      );
+      if (activeBooking) {
+        const tId = activeBooking.teacher?.id || activeBooking.teacher_id;
+        if (tId) {
+          setLiveClassInfo(prev => {
+            if (prev) return prev;
+            return {
+              room_id: `class-${tId}-${activeBooking.date}`,
+              teacher_id: tId
+            };
+          });
+        }
+      }
+      
+      const validBookings = bookingsData.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
+      const completed = validBookings.filter((b: any) => {
+        const bookingTime = parseBookingDateTime(b.date, b.time);
+        return (b.status === 'completed' || b.status === 'attended') && bookingTime <= now;
+      }).length;
+
+      setCompletedCount(completed);
+      setTotalCount(validBookings.length);
+    }
+  }, [currentStudentId]);
 
   useEffect(() => {
-    // Check for any currently active live class
+    // Check for any currently active or scheduled live class created by a teacher
     const fetchLiveClass = async () => {
-      const { data } = await supabase
-        .from('live_classes')
-        .select('room_id, teacher_id')
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .limit(1);
+      // 1. Query live_classes table for active, live, or scheduled sessions
+      try {
+        const { data } = await supabase
+          .from('live_classes')
+          .select('room_id, teacher_id, status, scheduled_at, created_at')
+          .in('status', ['live', 'active', 'scheduled'])
+          .order('created_at', { ascending: false });
 
-      if (data && data.length > 0) {
-        setLiveClassInfo(data[0]);
+        if (data && data.length > 0) {
+          const active = data.find((c: any) => c.status === 'live' || c.status === 'active');
+          const session = active || data[0];
+          setLiveClassInfo({ room_id: session.room_id, teacher_id: session.teacher_id });
+          return;
+        }
+      } catch (err) {
+        console.warn("live_classes query error (checking fallbacks):", err);
       }
+
+      if (currentStudentId) {
+        // 2. Check student's recent chat messages containing meeting links for active sessions
+        try {
+          const { data: messages } = await supabase
+            .from('chat_messages')
+            .select('message, sender_id, created_at')
+            .eq('receiver_id', currentStudentId)
+            .order('created_at', { ascending: false })
+            .limit(20);
+
+          if (messages && messages.length > 0) {
+            const sessionMsg = messages.find((m: any) => m.message && m.message.includes('/meeting/'));
+            if (sessionMsg) {
+              const match = sessionMsg.message.match(/\/meeting\/([a-zA-Z0-9_-]+)/);
+              if (match && match[1]) {
+                const roomId = match[1];
+                setLiveClassInfo({ room_id: roomId, teacher_id: sessionMsg.sender_id });
+                return;
+              }
+            }
+          }
+        } catch (msgErr) {
+          console.warn("chat_messages lookup error:", msgErr);
+        }
+
+        // 3. Check for any active or confirmed session booking created by teacher
+        try {
+          const { data: recentBookings } = await supabase
+            .from('bookings')
+            .select('id, teacher_id, date, time, status, rating, created_at')
+            .eq('student_id', currentStudentId)
+            .in('status', ['confirmed', 'active'])
+            .order('created_at', { ascending: false });
+
+          if (recentBookings && recentBookings.length > 0) {
+            const unratedBooking = recentBookings.find((b: any) => b.rating == null);
+            if (unratedBooking) {
+              const roomId = `class-${unratedBooking.teacher_id}-${unratedBooking.date}`;
+              setLiveClassInfo({ room_id: roomId, teacher_id: unratedBooking.teacher_id });
+              return;
+            }
+          }
+        } catch (bookingErr) {
+          console.warn("bookings lookup error:", bookingErr);
+        }
+      }
+
+      setLiveClassInfo(prev => prev ? prev : null);
     };
+
     fetchLiveClass();
 
-    // Listen for new classes starting or ending
+    // Listen for new classes starting, scheduled, or ending
     const liveClassChannel = supabase
       .channel('live-classes-student')
       .on('postgres_changes', {
@@ -65,18 +219,77 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
         schema: 'public',
         table: 'live_classes'
       }, (payload) => {
-        if (payload.new && payload.new.status === 'active') {
+        if (payload.new && (payload.new.status === 'live' || payload.new.status === 'active' || payload.new.status === 'scheduled')) {
           setLiveClassInfo({ room_id: payload.new.room_id, teacher_id: payload.new.teacher_id });
-        } else if (payload.new && payload.new.status === 'completed') {
-          setLiveClassInfo(null);
+        } else if (payload.new && (payload.new.status === 'ended' || payload.new.status === 'completed' || payload.new.status === 'cancelled')) {
+          fetchLiveClass();
         }
       })
       .subscribe();
 
+    // Listen for real-time broadcast session_created event from teacher (targeted channel)
+    const broadcastChannel = currentStudentId ? supabase
+      .channel(`student-live-session-${currentStudentId}`)
+      .on('broadcast', { event: 'session_created' }, (payload) => {
+        if (payload.payload?.roomId) {
+          setLiveClassInfo({ room_id: payload.payload.roomId, teacher_id: payload.payload.teacherId });
+          fetchBookings();
+        }
+      })
+      .subscribe() : null;
+
+    // Listen for global real-time session_created broadcast
+    const globalSessionChannel = supabase
+      .channel('yadalearn-live-sessions')
+      .on('broadcast', { event: 'session_created' }, (payload) => {
+        if (payload.payload?.roomId && (!payload.payload?.studentId || payload.payload.studentId === currentStudentId)) {
+          setLiveClassInfo({ room_id: payload.payload.roomId, teacher_id: payload.payload.teacherId });
+          fetchBookings();
+        }
+      })
+      .subscribe();
+
+    // Listen for real-time chat messages with meeting links
+    const sessionMsgChannel = currentStudentId ? supabase
+      .channel(`student-session-msgs-${currentStudentId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'chat_messages',
+        filter: `receiver_id=eq.${currentStudentId}`
+      }, (payload) => {
+        if (payload.new?.message && payload.new.message.includes('/meeting/')) {
+          const match = payload.new.message.match(/\/meeting\/([a-zA-Z0-9_-]+)/);
+          if (match && match[1]) {
+            setLiveClassInfo({ room_id: match[1], teacher_id: payload.new.sender_id });
+            fetchBookings();
+          }
+        }
+      })
+      .subscribe() : null;
+
+    // Listen for real-time bookings creation/updates for this student
+    const bookingsChannel = currentStudentId ? supabase
+      .channel(`student-bookings-${currentStudentId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'bookings',
+        filter: `student_id=eq.${currentStudentId}`
+      }, () => {
+        fetchLiveClass();
+        fetchBookings();
+      })
+      .subscribe() : null;
+
     return () => {
       supabase.removeChannel(liveClassChannel);
+      if (broadcastChannel) supabase.removeChannel(broadcastChannel);
+      supabase.removeChannel(globalSessionChannel);
+      if (sessionMsgChannel) supabase.removeChannel(sessionMsgChannel);
+      if (bookingsChannel) supabase.removeChannel(bookingsChannel);
     };
-  }, []);
+  }, [currentStudentId, fetchBookings]);
 
   useEffect(() => {
     // Fetch initial presence
@@ -149,6 +362,28 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
       });
       setLastMessages(mapping);
       setUnreadCounts(counts);
+
+      // Check for active/scheduled session meeting link from teacher
+      for (let i = filtered.length - 1; i >= 0; i--) {
+        const m = filtered[i];
+        if (m.sender_id !== user.id && m.message && m.message.includes('/meeting/')) {
+          const match = m.message.match(/\/meeting\/([a-zA-Z0-9_-]+)/);
+          if (match && match[1]) {
+            const roomId = match[1];
+            supabase
+              .from('live_classes')
+              .select('status')
+              .eq('room_id', roomId)
+              .maybeSingle()
+              .then(({ data: lc }) => {
+                if (!lc || (lc.status !== 'completed' && lc.status !== 'cancelled')) {
+                  setLiveClassInfo({ room_id: roomId, teacher_id: m.sender_id });
+                }
+              });
+            break;
+          }
+        }
+      }
     }
   };
 
@@ -157,26 +392,44 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
 
     fetchLastMessages();
 
-    // Subscribe to real-time changes
+    // Subscribe to real-time chat message changes for instant session activation
     const channel = supabase
       .channel('dashboard-last-messages-student')
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'chat_messages'
-      }, () => {
+      }, (payload: any) => {
+        if (payload?.new?.message && payload.new.message.includes('/meeting/')) {
+          const match = payload.new.message.match(/\/meeting\/([a-zA-Z0-9_-]+)/);
+          if (match && match[1]) {
+            setLiveClassInfo({ room_id: match[1], teacher_id: payload.new.sender_id });
+          }
+        }
         fetchLastMessages();
+      })
+      .subscribe();
+
+    // Listen for class completion to cleanly deactivate
+    const endChannel = supabase
+      .channel('dashboard-class-end-listener')
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'live_classes'
+      }, (payload: any) => {
+        if (payload?.new && (payload.new.status === 'completed' || payload.new.status === 'cancelled')) {
+          setLiveClassInfo(prev => prev && prev.room_id === payload.new.room_id ? null : prev);
+        }
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
+      supabase.removeChannel(endChannel);
     };
   }, [user?.id]);
 
-  const [allBookings, setAllBookings] = useState<any[]>([]);
-  const [completedCount, setCompletedCount] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
   const [weeklyProgress, setWeeklyProgress] = useState<number | null>(null);
   const [detectedCountry, setDetectedCountry] = useState<string | null>(null);
   const [detectedCountryName, setDetectedCountryName] = useState<string | null>(null);
@@ -311,56 +564,8 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   };
 
   useEffect(() => {
-    async function fetchBookings() {
-      if (!user?.id) return;
-      const { data: bookingsData } = await supabase
-        .from('bookings')
-        .select(`
-          id,
-          subject,
-          date,
-          time,
-          status,
-          rating,
-          teacher:profiles!bookings_teacher_id_fkey(id, full_name, avatar_url)
-        `)
-        .eq('student_id', viewAsStudentId || user.id);
-      
-      if (bookingsData) {
-        setAllBookings(bookingsData);
-        
-        const now = new Date();
-        const parseBookingDateTime = (dateStr: string, timeStr: string) => {
-          try {
-            const [year, month, day] = dateStr.split('-').map(Number);
-            const match = timeStr.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
-            let hours = 0;
-            let minutes = 0;
-            if (match) {
-              hours = Number(match[1]);
-              minutes = Number(match[2]);
-              const ampm = match[3].toUpperCase();
-              if (ampm === 'PM' && hours < 12) hours += 12;
-              if (ampm === 'AM' && hours === 12) hours = 0;
-            }
-            return new Date(year, month - 1, day, hours, minutes);
-          } catch (e) {
-            return new Date(0);
-          }
-        };
-
-        const validBookings = bookingsData.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
-        const completed = validBookings.filter((b: any) => {
-          const bookingTime = parseBookingDateTime(b.date, b.time);
-          return (b.status === 'completed' || b.status === 'attended') && bookingTime <= now;
-        }).length;
-
-        setCompletedCount(completed);
-        setTotalCount(validBookings.length);
-      }
-    }
     fetchBookings();
-  }, [viewAsStudentId, user?.id]);
+  }, [fetchBookings]);
 
   useEffect(() => {
     async function fetchWeeklyRating() {
@@ -410,6 +615,43 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
 
   const nextEvent = getNextUpcomingEvent(studentSchedule);
   const progressPercent = weeklyProgress ?? 0;
+
+  const activeLiveClass = useMemo(() => {
+    if (liveClassInfo) return liveClassInfo;
+
+    const d = new Date();
+    const todayStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+
+    // 1. Check allBookings for latest confirmed/active unrated session
+    const activeBooking = allBookings.find((b: any) => 
+      (b.status === 'confirmed' || b.status === 'active') && 
+      b.rating == null
+    );
+    if (activeBooking) {
+      const tId = activeBooking.teacher?.id || activeBooking.teacher_id;
+      if (tId) {
+        return {
+          room_id: `class-${tId}-${activeBooking.date}`,
+          teacher_id: tId,
+          title: activeBooking.subject
+        };
+      }
+    }
+
+    // 2. Check nextEvent if it is upcoming or active confirmed and unrated
+    if (nextEvent && (nextEvent.status === 'confirmed' || nextEvent.status === 'active') && nextEvent.rating == null) {
+      const tId = nextEvent.teacherId || nextEvent.teacher?.id;
+      if (tId) {
+        return {
+          room_id: `class-${tId}-${nextEvent.date}`,
+          teacher_id: tId,
+          title: nextEvent.title
+        };
+      }
+    }
+
+    return null;
+  }, [liveClassInfo, allBookings, nextEvent]);
 
 
   const resizeProfileImage = (base64Str: string): Promise<string> => {
@@ -881,18 +1123,39 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
               </div>
 
               <div
-                onClick={() => (showJoinCTA || !!liveClassInfo) ? setActiveModal('join-class') : null}
+                onClick={() => activeLiveClass ? navigate(`/meeting/${activeLiveClass.room_id}`) : null}
                 className={cn(
-                  "p-5 rounded-[1.5rem] border shadow-sm flex flex-col items-center justify-center gap-2 text-center h-28 transition-all",
-                  (showJoinCTA || !!liveClassInfo)
-                    ? "bg-white/50 hover:bg-white/70 dark:bg-zinc-800/30 dark:hover:bg-zinc-800/50 border-white/60 dark:border-zinc-700/20 cursor-pointer hover:scale-[1.02] active:scale-95"
+                  "p-5 rounded-[1.5rem] border shadow-sm flex flex-col items-center justify-center gap-2 text-center h-28 transition-all relative",
+                  activeLiveClass
+                    ? "bg-gradient-to-br from-[#5B4A9F]/10 via-purple-50/80 to-[#8F81D6]/15 dark:from-purple-950/40 dark:to-indigo-950/40 border-[#8F81D6]/80 dark:border-purple-400/80 shadow-md ring-2 ring-[#5B4A9F]/20 cursor-pointer hover:scale-[1.03] active:scale-95 animate-in fade-in"
                     : "bg-gray-100/30 dark:bg-zinc-900/20 border-gray-200/40 dark:border-zinc-800/20 opacity-50 cursor-not-allowed pointer-events-none grayscale"
                 )}
               >
-                <div className="w-10 h-10 rounded-full bg-[#5B4A9F]/10 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-[#8F81D6] dark:text-purple-400 text-xl">videocam</span>
+                {activeLiveClass && (
+                  <span className="absolute top-2.5 right-2.5 flex h-2.5 w-2.5" title="Class in progress">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  </span>
+                )}
+                <div className={cn(
+                  "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                  activeLiveClass
+                    ? "bg-gradient-to-tr from-[#5B4A9F] to-[#8F81D6] text-white shadow-md shadow-purple-500/25 animate-pulse"
+                    : "bg-[#5B4A9F]/10"
+                )}>
+                  <span className={cn(
+                    "material-symbols-outlined text-xl transition-all",
+                    activeLiveClass ? "text-white scale-110" : "text-[#8F81D6] dark:text-purple-400"
+                  )}>
+                    videocam
+                  </span>
                 </div>
-                <p className="text-xs font-bold text-slate-750 dark:text-zinc-200">Join Class</p>
+                <p className={cn(
+                  "text-xs font-bold transition-all",
+                  activeLiveClass ? "text-[#5B4A9F] dark:text-purple-300 font-extrabold" : "text-slate-750 dark:text-zinc-200"
+                )}>
+                  Join Class
+                </p>
               </div>
 
               <div
@@ -1040,7 +1303,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
         </div>
 
         {/* Live Class Alert Banner */}
-        {liveClassInfo && (
+        {activeLiveClass && (
           <div className="mx-4 md:mx-6 mt-6 p-4 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-xl shadow-purple-500/20 flex flex-col sm:flex-row items-center justify-between gap-4 animate-in slide-in-from-top-4">
             <div className="flex items-center gap-3">
               <span className="relative flex h-3 w-3">
@@ -1053,7 +1316,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
               </div>
             </div>
             <button 
-              onClick={() => navigate(`/meeting/${liveClassInfo.room_id}`)}
+              onClick={() => navigate(`/meeting/${activeLiveClass.room_id}`)}
               className="w-full sm:w-auto px-6 py-2 bg-white text-purple-700 font-bold rounded-xl shadow-md hover:scale-105 active:scale-95 transition-all"
             >
               Join Class
@@ -1280,8 +1543,10 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
                     if (selectedBookingToRate.id) {
                       await supabase
                         .from('bookings')
-                        .update({ rating: ratingValue })
+                        .update({ rating: ratingValue, status: 'completed' })
                         .eq('id', selectedBookingToRate.id);
+
+                      setAllBookings(prev => prev.map(b => b.id === selectedBookingToRate.id ? { ...b, rating: ratingValue, status: 'completed' } : b));
                     }
 
                     // 3. Recalculate average rating for teacher and write to teacher_profiles

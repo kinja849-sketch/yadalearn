@@ -65,14 +65,18 @@ export function useDashboardData(studentId?: string) {
                 const parseBookingDateTime = (dateStr: string, timeStr: string) => {
                     try {
                         const [year, month, day] = dateStr.split('-').map(Number);
-                        const match = timeStr.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+                        const match12 = timeStr.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+                        const match24 = timeStr.match(/^(\d+):(\d+)$/);
                         let hours = 0; let minutes = 0;
-                        if (match) {
-                            hours = Number(match[1]);
-                            minutes = Number(match[2]);
-                            const ampm = match[3].toUpperCase();
+                        if (match12) {
+                            hours = Number(match12[1]);
+                            minutes = Number(match12[2]);
+                            const ampm = match12[3].toUpperCase();
                             if (ampm === 'PM' && hours < 12) hours += 12;
                             if (ampm === 'AM' && hours === 12) hours = 0;
+                        } else if (match24) {
+                            hours = Number(match24[1]);
+                            minutes = Number(match24[2]);
                         }
                         return new Date(year, month - 1, day, hours, minutes);
                     } catch (e) { return new Date(0); }

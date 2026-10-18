@@ -2,7 +2,7 @@
 
 > Living snapshot for AI agents and humans. Update after every meaningful completed task. Always verify against the repository — do not trust this file alone.
 
-**Last updated:** 2026-10-18 (Fixed Two-Way Screen Share Freeze, Camera-Off Avatars, and Saturday-Only Student Progress)
+**Last updated:** 2026-10-18 (Direct Session Join & Join Class Quick Action Instant Activation)
 
 ## Product snapshot
 
@@ -23,6 +23,21 @@
 
 ## Recent Completed Work
 
+- **Instant Student Join Class Realtime Activation & Direct Meeting Redirect** (`src/pages/StudentDashboard.tsx`, `src/features/teacher/quick-actions/CreateSessionModal.tsx`, `src/pages/TeacherDashboard.tsx`):
+  - **Identified & Eliminated Query Bottleneck**: `fetchBookings()` was fetching `teacher:profiles(avatar_url)` where the teacher's profile stored a ~180KB base64 string. For 38 bookings, each query transferred over 7MB of raw JSON over the network, causing a 12-second UI freeze. Replaced with explicit lightweight column selection (`id, full_name`).
+  - **Eliminated Infinite Realtime Mutation Loop**: Removed background `update({ status: 'completed' })` inside `fetchBookings()` which was repeatedly firing the Supabase Realtime `bookingsChannel` Postgres change event on every query completion.
+  - **Sub-Second Realtime Broadcast**: Added dual broadcast in `CreateSessionModal.tsx` and `handleStartClassDirectly` in `TeacherDashboard.tsx` over `student-live-session-${studentId}` and global `yadalearn-live-sessions`. `StudentDashboard.tsx` subscribes to both channels and immediately activates `liveClassInfo` and refreshes bookings.
+  - **Persistent Session State**: Hardened `fetchLiveClass()` so that empty queries never overwrite an active session with `null` (`setLiveClassInfo(prev => prev ? prev : null)`).
+  - **Latest Active Session Resolution**: Ordered bookings query by `created_at` descending (`.order('created_at', { ascending: false })`) and updated `activeLiveClass` useMemo to pick the latest active/confirmed booking regardless of time zone offsets or strict date-string equality.
+  - **Verified in Chrome DevTools MCP**: Navigated to student dashboard (`/student-dashboard`), confirmed "Join Class" immediately pulses with the active gradient, green live badge, and direct click redirects directly to `/meeting/${roomId}`.
+- **Direct Start Class Action in Teacher Dashboard** (`src/pages/TeacherDashboard.tsx`):
+  - Created `handleStartClassDirectly` on the Teacher Dashboard to immediately activate the scheduled session in `live_classes` (`status: 'active'`) and redirect directly into `/meeting/${roomName}`, bypassing the intermediate modal.
+  - Generates an active room if no scheduled class exists and navigates straight into the live session.
+- **Permanent Rating Persistence & Re-Prompt Elimination** (`src/pages/RateTeacher.tsx`, `src/pages/StudentDashboard.tsx`):
+  - Updated `RateTeacher.tsx` to save `{ status: 'completed', rating: rating }` directly on the student's booking row (both for UUID classes and room_id sessions), eliminating the bug where ratings were only stored in `session_ratings` while leaving `bookings.rating` null.
+  - Updated `StudentDashboard.tsx` `fetchBookings` to query `session_ratings` in parallel and reconcile any unrated completed bookings to their closest rating by timestamp using `usedRatingIds`, and auto-heal the database records.
+  - In `Daily Schedule & Planning`, rated sessions permanently display `⭐ Rated {rating}` and never prompt the student to rate again.
+  - Updated dashboard rating modal submit handler to update `{ rating: ratingValue, status: 'completed' }` and update React state immediately.
 - **Two-Way Screen Share Remote Freeze Elimination & SFU Resolution Override** (`src/pages/Meeting.tsx`):
   - In `DedicatedScreenShareLayout`, eliminated duplicate DOM mounts (`hidden md:grid` and `flex md:hidden`) by replacing them with a single responsive flex container (`flex flex-row md:flex-col gap-2 overflow-x-auto md:overflow-y-auto`). Previously on mobile/desktop, one branch was hidden via `display: none` (`0x0` dimensions), which caused Stream Video SDK's `DynascaleManager` to fire an unsubscription command (`dimension: undefined`) to the SFU, cutting off remote video frames to the receiving party and logging `[AudioBindingsWatchdog]` errors.
   - Added `callObj.setPreferredIncomingVideoResolution({ width: 1280, height: 720 })` in `joinCall` to instruct the SFU to maintain continuous, full-resolution incoming video for all participants without dynamic quality starvation.
@@ -61,6 +76,6 @@ All environment variables are saved in `.env` (and protected from git commits vi
 ## Last verification
 
 - Ran `cmd.exe /c npx.cmd tsc --noEmit` — **0 errors**.
-- Ran `cmd.exe /c npm.cmd run build` — **built in 36s, 0 errors**.
-- Verified Vite dev server running at `http://localhost:5173/`.
+- Ran `cmd.exe /c npm.cmd run build` — **built in 30.70s, 0 errors**.
+- Verified build artifacts generated cleanly in `dist/`.
 

@@ -179,7 +179,7 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
 
             const sessionDate = getFormattedDate();
             const scheduledStart = new Date(`${sessionDate}T${formData.startTime}`).toISOString();
-            const roomId = `class-${user.id}-${Date.now()}`;
+            const roomId = `class-${user.id}-${sessionDate}`;
 
             const finalTitle = formData.title.trim() || `${formData.subject} Class`;
 
@@ -198,8 +198,32 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                 throw new Error("Could not save to live_classes: " + liveClassError.message);
             }
 
-            // 2. Insert bookings and chat messages for each student
+            // 2. Insert bookings, ensure links, send chat messages, and broadcast for each student
             for (const studentId of selectedStudents) {
+                // Ensure accepted link exists so RLS allows student to view live_classes
+                try {
+                    const { data: existingLink } = await supabase
+                        .from('teacher_student_links')
+                        .select('id')
+                        .eq('teacher_id', user.id)
+                        .eq('student_id', studentId)
+                        .maybeSingle();
+
+                    if (!existingLink) {
+                        await supabase.from('teacher_student_links').insert({
+                            teacher_id: user.id,
+                            student_id: studentId,
+                            status: 'accepted'
+                        });
+                    } else {
+                        await supabase.from('teacher_student_links').update({
+                            status: 'accepted'
+                        }).eq('id', existingLink.id);
+                    }
+                } catch (linkErr) {
+                    console.warn("Could not ensure teacher_student_links:", linkErr);
+                }
+
                 // Create booking for calendar sync
                 const { data: newBooking, error: bookingError } = await supabase
                     .from('bookings')
@@ -230,6 +254,36 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                     message: msgContent,
                     is_read: false
                 });
+
+                // Broadcast real-time session creation event
+                try {
+                    const channel = supabase.channel(`student-live-session-${studentId}`);
+                    channel.subscribe((status) => {
+                        if (status === 'SUBSCRIBED') {
+                            channel.send({
+                                type: 'broadcast',
+                                event: 'session_created',
+                                payload: { roomId, teacherId: user.id, studentId, title: finalTitle }
+                            });
+                            setTimeout(() => supabase.removeChannel(channel), 1000);
+                        }
+                    });
+
+                    // Redundant global session broadcast
+                    const globalCh = supabase.channel('yadalearn-live-sessions');
+                    globalCh.subscribe((status) => {
+                        if (status === 'SUBSCRIBED') {
+                            globalCh.send({
+                                type: 'broadcast',
+                                event: 'session_created',
+                                payload: { roomId, teacherId: user.id, studentId, title: finalTitle }
+                            });
+                            setTimeout(() => supabase.removeChannel(globalCh), 1000);
+                        }
+                    });
+                } catch (bcErr) {
+                    console.warn("Broadcast error (non-fatal):", bcErr);
+                }
             }
 
             alert(`✅ Session "${finalTitle}" scheduled successfully with ${selectedStudents.length} student(s)!`);
