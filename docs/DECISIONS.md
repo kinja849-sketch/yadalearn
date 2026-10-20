@@ -56,3 +56,20 @@ Rationale: …
 **Decision:** New UI must extend the existing design language. Do not adopt a competing UI kit (MUI, Chakra, etc.) as a replacement.
 
 **Rationale:** Visual consistency across student/teacher/parent surfaces.
+
+---
+
+## 2026-10-21 — Google Gemini Multimodal Live API Voice Architecture
+
+**Status:** Approved
+
+**Context:** The legacy voice flow relied on sequential browser `webkitSpeechRecognition` → REST `/api/student-ai` → REST `/api/tts` (Aoede), resulting in 3,000–6,000ms latency, high failure rates on mobile Safari/Chrome, and lack of real-time interruption handling.
+
+**Decision:** The voice assistant uses the Google Gemini Multimodal Live API (`models/gemini-2.5-flash-native-audio-latest`) over a persistent WebSocket gateway (`/api/gemini-live-ws`) with bidirectional streaming:
+1. Microphone audio is continuously resampled to 16kHz 16-bit linear PCM and streamed via `realtimeInput.mediaChunks`.
+2. Speech output streams back as 24kHz 16-bit linear PCM chunks scheduled on `AudioContext` with zero latency.
+3. Server-side VAD interruption events (`serverContent.interrupted`) immediately halt client playback for natural barge-in.
+4. Function calling (`tools`) is handled dynamically by the backend gateway for weather and student data.
+5. All secrets (`GEMINI_API_KEY`) stay server-side.
+
+**Rationale:** Achieves true full-duplex conversational intelligence, <800ms first-audio latency, and consistent cross-platform reliability across desktop and mobile devices.

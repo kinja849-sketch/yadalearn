@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { supabase } from '@/lib/supabase';
 import { MessageTeacherModal } from '@/features/student/quick-actions/MessageTeacherModal';
+import { useTeacherAI } from '@/hooks/useTeacherAI';
+import type { EngagementRadarResponse } from '@/types/ai';
 
 interface StudentOverviewModalProps {
     isOpen: boolean;
@@ -9,6 +11,7 @@ interface StudentOverviewModalProps {
 }
 
 export const StudentOverviewModal = ({ isOpen, onClose }: StudentOverviewModalProps) => {
+    const { analyzeEngagement, isLoading: isAnalyzingRadar } = useTeacherAI();
     const [searchQuery, setSearchQuery] = useState('');
     const [activeFilter, setActiveFilter] = useState('all');
     const [selectedStudent, setSelectedStudent] = useState<any>(null);
@@ -16,6 +19,8 @@ export const StudentOverviewModal = ({ isOpen, onClose }: StudentOverviewModalPr
     const [loading, setLoading] = useState(true);
     const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
     const [recipientId, setRecipientId] = useState<string | null>(null);
+    const [radarInsight, setRadarInsight] = useState<Record<string, EngagementRadarResponse>>({});
+
 
     // Fetch dynamic students
     useEffect(() => {
@@ -294,6 +299,86 @@ export const StudentOverviewModal = ({ isOpen, onClose }: StudentOverviewModalPr
                                                 style={{ width: '92%' }}
                                             />
                                         </div>
+                                    </div>
+
+                                    {/* AI Student Engagement Radar */}
+                                    <div className="p-4 rounded-xl bg-gradient-to-br from-orange-50/90 via-amber-50/50 to-orange-50/30 dark:from-orange-950/20 dark:via-zinc-850 dark:to-zinc-900 border border-orange-200/70 dark:border-orange-900/40 shadow-sm space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-base">✨</span>
+                                                <div>
+                                                    <span className="text-xs font-extrabold text-orange-900 dark:text-orange-300 uppercase tracking-wider block">
+                                                        AI Engagement Radar
+                                                    </span>
+                                                    <span className="text-[10px] text-gray-500 dark:text-zinc-400">Intervention & progress insights</span>
+                                                </div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    const res = await analyzeEngagement(activeStudent.name, activeStudent.attendance, activeStudent.grade, activeStudent.missing);
+                                                    if (res) {
+                                                        setRadarInsight(prev => ({ ...prev, [activeStudent.id]: res }));
+                                                    }
+                                                }}
+                                                disabled={isAnalyzingRadar}
+                                                className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 shrink-0 active:scale-95"
+                                            >
+                                                {isAnalyzingRadar ? (
+                                                    <>
+                                                        <div className="size-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                        <span>Analyzing...</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span>Analyze Student</span>
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+
+                                        {radarInsight[activeStudent.id] && (
+                                            <div className="p-3 bg-white dark:bg-zinc-900 rounded-lg border border-orange-200/80 dark:border-zinc-800 space-y-2 text-xs animate-in fade-in duration-200">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-bold text-gray-700 dark:text-gray-300">Risk Assessment:</span>
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider ${
+                                                        radarInsight[activeStudent.id].riskLevel === 'high'
+                                                            ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
+                                                            : radarInsight[activeStudent.id].riskLevel === 'medium'
+                                                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+                                                                : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                                                    }`}>
+                                                        {radarInsight[activeStudent.id].riskLevel} Risk
+                                                    </span>
+                                                </div>
+                                                <p className="text-gray-600 dark:text-gray-300">
+                                                    <strong className="text-gray-900 dark:text-white font-semibold">Trend: </strong>
+                                                    {radarInsight[activeStudent.id].trendAnalysis}
+                                                </p>
+                                                <p className="text-gray-600 dark:text-gray-300">
+                                                    <strong className="text-gray-900 dark:text-white font-semibold">Recommended Action: </strong>
+                                                    {radarInsight[activeStudent.id].recommendedAction}
+                                                </p>
+                                                <div className="bg-gray-50 dark:bg-zinc-800/60 p-2 rounded border border-gray-150 dark:border-zinc-700/60">
+                                                    <div className="flex items-center justify-between mb-1">
+                                                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Suggested Check-In Note:</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                navigator.clipboard.writeText(radarInsight[activeStudent.id].suggestedMessage);
+                                                                alert('Copied check-in message to clipboard!');
+                                                            }}
+                                                            className="text-[10px] font-bold text-orange-600 dark:text-orange-400 hover:underline"
+                                                        >
+                                                            Copy Note
+                                                        </button>
+                                                    </div>
+                                                    <p className="italic text-gray-700 dark:text-zinc-300 text-[11px]">
+                                                        "{radarInsight[activeStudent.id].suggestedMessage}"
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Parents Section */}

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { useTeacherAI } from '@/hooks/useTeacherAI';
+import type { LessonPlanResponse } from '@/types/ai';
 
 interface CreateSessionModalProps {
     isOpen: boolean;
@@ -10,10 +12,14 @@ interface CreateSessionModalProps {
 
 export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps) => {
     const { user, subjects } = useAuth();
+    const { generateLessonPlan, isLoading: isGeneratingPlan } = useTeacherAI();
     const [isScheduling, setIsScheduling] = useState(false);
     const [students, setStudents] = useState<any[]>([]);
     const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
     const [isEditListOpen, setIsEditListOpen] = useState(false);
+    const [lessonPlan, setLessonPlan] = useState<LessonPlanResponse | null>(null);
+    const [isPlanExpanded, setIsPlanExpanded] = useState(false);
+
 
     // Helper to get current time rounded to nearest 15 mins
     const getRoundedTime = () => {
@@ -334,7 +340,32 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
-                                <label className="text-sm font-bold text-gray-500 dark:text-orange-400 ml-1">What is the lesson? <span className="text-xs opacity-50 font-normal">(Optional)</span></label>
+                                <div className="flex items-center justify-between ml-1">
+                                    <label className="text-sm font-bold text-gray-500 dark:text-orange-400">What is the lesson? <span className="text-xs opacity-50 font-normal">(Optional)</span></label>
+                                    <button
+                                        type="button"
+                                        onClick={async () => {
+                                            const plan = await generateLessonPlan(formData.subject, formData.title, formData.duration);
+                                            if (plan) {
+                                                setLessonPlan(plan);
+                                                setIsPlanExpanded(true);
+                                            }
+                                        }}
+                                        disabled={isGeneratingPlan || !formData.title.trim()}
+                                        className="text-xs font-bold text-orange-600 dark:text-orange-400 hover:text-orange-700 flex items-center gap-1 active:scale-95 transition-transform"
+                                    >
+                                        {isGeneratingPlan ? (
+                                            <>
+                                                <div className="size-3 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                                                <span>Planning...</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span>✨ AI Lesson Planner</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
                                 <textarea
                                     className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 resize-none transition-all font-semibold"
                                     placeholder="Add details about the session..."
@@ -342,6 +373,70 @@ export const CreateSessionModal = ({ isOpen, onClose }: CreateSessionModalProps)
                                     value={formData.description}
                                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                                 />
+
+                                {lessonPlan && (
+                                    <div className="mt-2 p-4 bg-orange-50/70 dark:bg-zinc-850/80 rounded-2xl border border-orange-200/80 dark:border-zinc-700 space-y-3 text-xs">
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-extrabold text-orange-800 dark:text-orange-300 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                                                ✨ Lesson Outline & Discussion Starter
+                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFormData(prev => ({ ...prev, description: lessonPlan.descriptionText }))}
+                                                    className="px-2 py-0.5 rounded bg-orange-500 hover:bg-orange-600 text-white font-bold text-[10px] shadow-sm transition-all"
+                                                >
+                                                    Insert into Description
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setIsPlanExpanded(!isPlanExpanded)}
+                                                    className="text-gray-500 hover:text-gray-700 text-xs font-bold"
+                                                >
+                                                    {isPlanExpanded ? 'Collapse' : 'Expand'}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {isPlanExpanded && (
+                                            <div className="space-y-3 pt-1 border-t border-orange-200/50 dark:border-zinc-700/50">
+                                                <div>
+                                                    <span className="font-bold text-gray-800 dark:text-zinc-200 block mb-1">Icebreaker Hook:</span>
+                                                    <p className="text-gray-600 dark:text-zinc-400 italic bg-white/70 dark:bg-zinc-900/60 p-2.5 rounded-lg border border-orange-100 dark:border-zinc-800">
+                                                        {lessonPlan.hook}
+                                                    </p>
+                                                </div>
+
+                                                <div>
+                                                    <span className="font-bold text-gray-800 dark:text-zinc-200 block mb-1">Session Timeline:</span>
+                                                    <div className="grid grid-cols-2 gap-1.5">
+                                                        {lessonPlan.timeline.map((step, idx) => (
+                                                            <div key={idx} className="p-2 bg-white/70 dark:bg-zinc-900/60 rounded-lg border border-orange-100 dark:border-zinc-800">
+                                                                <div className="flex justify-between items-center text-[10px] font-bold text-orange-600 dark:text-orange-400">
+                                                                    <span>{step.phase}</span>
+                                                                    <span className="font-mono">{step.duration}</span>
+                                                                </div>
+                                                                <p className="text-[10px] text-gray-600 dark:text-zinc-400 mt-0.5 line-clamp-2">{step.activity}</p>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <span className="font-bold text-gray-800 dark:text-zinc-200 block mb-1">Discussion Questions:</span>
+                                                    <ul className="space-y-1 list-none pl-0">
+                                                        {lessonPlan.discussionQuestions.map((q, idx) => (
+                                                            <li key={idx} className="flex items-start gap-1.5 text-gray-700 dark:text-zinc-300 bg-white/50 dark:bg-zinc-900/40 p-2 rounded-lg border border-orange-100/60 dark:border-zinc-800">
+                                                                <span className="font-bold text-orange-500 shrink-0">Q{idx + 1}:</span>
+                                                                <span>{q}</span>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="space-y-4">

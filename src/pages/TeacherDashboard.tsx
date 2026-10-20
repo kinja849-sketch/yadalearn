@@ -25,7 +25,8 @@ import {
   Home, 
   Settings as SettingsIcon, 
   Bell,
-  Menu
+  Menu,
+  Sparkles
 } from 'lucide-react';
 import { BottomNav } from '@/components/BottomNav';
 import { StudentProfileModal } from '@/components/ProfileModals';
@@ -37,10 +38,13 @@ import {
   QuickAnnouncementModal,
   ClassLinkModal,
   UploadMaterialsModal,
-  RateStudentModal
+  RateStudentModal,
+  TeacherAICoPilotModal
 } from '@/features/teacher/quick-actions';
+
 import { MessageTeacherModal } from '@/features/student/quick-actions/MessageTeacherModal';
 import { cn } from '@/lib/utils';
+import { checkAndAutoCancelExpiredSessions } from '@/utils/sessionManager';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
@@ -124,12 +128,13 @@ const TeacherDashboard = () => {
     }
   };
 
-  // Find the next upcoming/active event based on the current actual time
+  // Find the next upcoming/active event based on the current actual time (strictly within 1 hour)
   const getNextUpcomingEvent = (schedule: any[]) => {
     if (!schedule || schedule.length === 0) return null;
     const now = new Date();
     
     const upcoming = schedule.filter((event: any) => {
+      if (event.status === 'cancelled' || event.status === 'rejected') return false;
       const start = parseDateTime(event.date, event.time);
       const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour duration
       return end > now;
@@ -139,6 +144,12 @@ const TeacherDashboard = () => {
   };
 
   const [nextEvent, setNextEvent] = useState<any>(null);
+
+  useEffect(() => {
+    if (user?.id) {
+      checkAndAutoCancelExpiredSessions({ teacherId: user.id });
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     if (teacherSchedule && teacherSchedule.length > 0) {
@@ -158,29 +169,45 @@ const TeacherDashboard = () => {
     try {
       const d = new Date();
       const todayStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+      const nowMs = Date.now();
+      const ONE_HOUR_MS = 60 * 60 * 1000;
 
       // 1. Check if there's already an active, live, or scheduled class for this teacher
       const { data: existingClasses } = await supabase
         .from('live_classes')
-        .select('id, room_id, status, title, subject')
+        .select('id, room_id, status, title, subject, scheduled_at, created_at')
         .eq('teacher_id', user.id)
         .in('status', ['live', 'active', 'scheduled'])
-        .order('created_at', { ascending: false })
-        .limit(1);
+        .order('created_at', { ascending: false });
+
+      let validClass = null;
+      if (existingClasses && existingClasses.length > 0) {
+        const expiredIds: string[] = [];
+        for (const c of existingClasses) {
+          const sTime = new Date(c.scheduled_at || c.created_at).getTime();
+          if (sTime > 0 && nowMs > sTime + ONE_HOUR_MS) {
+            expiredIds.push(c.id);
+          } else if (!validClass) {
+            validClass = c;
+          }
+        }
+        if (expiredIds.length > 0) {
+          // Batch cancel and nullify links in one request
+          supabase.from('live_classes').update({ status: 'cancelled', room_id: null }).in('id', expiredIds).catch(() => {});
+        }
+      }
 
       let roomName = '';
-      if (existingClasses && existingClasses.length > 0) {
-        const targetClass = existingClasses[0];
-        roomName = targetClass.room_id || `class-${user.id}-${todayStr}`;
-        
+      if (validClass) {
+        roomName = validClass.room_id || `class-${user.id}-${todayStr}`;
         // Update its status to live
         await supabase
           .from('live_classes')
           .update({ status: 'live', room_id: roomName })
-          .eq('id', targetClass.id);
+          .eq('id', validClass.id);
       } else {
-        // Fallback: check if nextEvent has a room or generate a deterministic room
-        roomName = nextEvent?.room_id || (nextEvent?.id && typeof nextEvent.id === 'string' && nextEvent.id.startsWith('class-') ? nextEvent.id : `class-${user.id}-${todayStr}`);
+        // Fallback: create fresh active room for today
+        roomName = `class-${user.id}-${todayStr}`;
         const teacherSubject = (user as any)?.subjects?.[0] || 'Live Session';
         await supabase.from('live_classes').insert({
           teacher_id: user.id,
@@ -972,6 +999,31 @@ const TeacherDashboard = () => {
               </button>
             </div>
             
+            {/* AI Teaching Co-Pilot Banner */}
+            <div
+              onClick={() => setActiveModal('ai-copilot')}
+              className="mb-4 p-4 rounded-2xl bg-gradient-to-r from-[#FF7D46]/15 via-orange-100/40 to-purple-500/10 hover:from-[#FF7D46]/25 dark:from-orange-950/30 dark:via-zinc-850 dark:to-purple-950/20 border border-[#FF7D46]/30 dark:border-orange-500/30 shadow-sm flex items-center justify-between cursor-pointer hover:scale-[1.01] active:scale-[0.99] transition-all group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="size-11 rounded-2xl bg-gradient-to-tr from-[#FF7D46] to-amber-400 flex items-center justify-center p-1.5 shadow-md shadow-orange-500/20">
+                  <img src="/logo (2).png" alt="Aoede" className="w-full h-full object-contain" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-extrabold text-slate-800 dark:text-zinc-100">Aoede AI Co-Pilot</h3>
+                    <span className="text-[10px] bg-orange-500 text-white font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      AI Mentor
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-zinc-400">Classroom discussion starters, grading assistant, & lesson planning</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/80 dark:bg-zinc-800/80 text-[#FF7D46] dark:text-orange-400 font-bold text-xs shadow-sm group-hover:bg-orange-500 group-hover:text-white transition-all shrink-0">
+                <Sparkles className="size-3.5" />
+                <span>Launch Co-Pilot</span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-3 gap-4">
               <div
                 onClick={handleStartClassDirectly}
@@ -1322,11 +1374,18 @@ const TeacherDashboard = () => {
         isOpen={activeModal === 'upload-materials'}
         onClose={() => setActiveModal(null)}
       />
+
+      <TeacherAICoPilotModal
+        isOpen={activeModal === 'ai-copilot'}
+        onClose={() => setActiveModal(null)}
+        onOpenAction={(modalName) => setActiveModal(modalName)}
+      />
       
       <ScanQRModal 
         isOpen={isScanQRModalOpen}
         onClose={() => setIsScanQRModalOpen(false)}
       />
+
 
       {/* Legacy Modals (kept from original implementation) */}
       {activeModal === 'students' && (

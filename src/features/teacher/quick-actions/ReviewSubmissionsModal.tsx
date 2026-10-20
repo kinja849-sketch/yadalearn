@@ -3,6 +3,8 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { formatDistanceToNow } from 'date-fns';
+import { useTeacherAI } from '@/hooks/useTeacherAI';
+import type { GradeSubmissionResponse } from '@/types/ai';
 
 interface ReviewSubmissionsModalProps {
     isOpen: boolean;
@@ -28,6 +30,7 @@ interface Submission {
 
 export const ReviewSubmissionsModal = ({ isOpen, onClose }: ReviewSubmissionsModalProps) => {
     const { user } = useAuth();
+    const { gradeSubmission, isLoading: isAiGrading } = useTeacherAI();
     const [activeFilter, setActiveFilter] = useState('all');
     const [submissions, setSubmissions] = useState<Submission[]>([]);
     const [loading, setLoading] = useState(false);
@@ -37,6 +40,8 @@ export const ReviewSubmissionsModal = ({ isOpen, onClose }: ReviewSubmissionsMod
     const [grade, setGrade] = useState('');
     const [feedback, setFeedback] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const [aiSuggestion, setAiSuggestion] = useState<GradeSubmissionResponse | null>(null);
+
 
     useEffect(() => {
         if (isOpen && user?.id) {
@@ -157,6 +162,24 @@ export const ReviewSubmissionsModal = ({ isOpen, onClose }: ReviewSubmissionsMod
     const selectedSubmission = submissions.find(s => s.id === selectedSubmissionId);
     const quickFeedback = ['✨ Excellent point', '⚠️ Cite sources', '📝 Revise', '👏 Great work'];
 
+    const handleGenerateAiReview = async () => {
+        if (!selectedSubmission) return;
+        const result = await gradeSubmission(
+            selectedSubmission.assignment.title,
+            selectedSubmission.content,
+            selectedSubmission.student.full_name
+        );
+        if (result) {
+            setAiSuggestion(result);
+        }
+    };
+
+    const handleApplySuggestion = () => {
+        if (!aiSuggestion) return;
+        setGrade(aiSuggestion.suggestedGrade.toString());
+        setFeedback(aiSuggestion.suggestedFeedback);
+    };
+
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
             <DialogContent className="!max-w-4xl mx-auto bg-white dark:bg-zinc-900 text-gray-900 dark:text-white border-0 p-0 overflow-hidden rounded-[2.5rem] max-h-[85vh] flex flex-col shadow-2xl">
@@ -218,6 +241,7 @@ export const ReviewSubmissionsModal = ({ isOpen, onClose }: ReviewSubmissionsMod
                                                 setSelectedSubmissionId(submission.id);
                                                 setGrade(submission.grade?.toString() || '');
                                                 setFeedback(submission.feedback || '');
+                                                setAiSuggestion(null);
                                             }}
                                             className={`flex gap-3 p-3 rounded-2xl border transition-all cursor-pointer group relative overflow-hidden ${selectedSubmissionId === submission.id
                                                     ? 'bg-orange-550/10 dark:bg-orange-950/10 border-orange-500 shadow-sm'
@@ -271,6 +295,67 @@ export const ReviewSubmissionsModal = ({ isOpen, onClose }: ReviewSubmissionsMod
 
                                             {/* Grading Controls */}
                                             <div className="bg-white dark:bg-zinc-800 p-5 border-t border-gray-100 dark:border-zinc-700/50">
+                                                {/* AI Formative Review Assistant */}
+                                                <div className="mb-4 p-4 rounded-2xl bg-gradient-to-r from-orange-50/80 via-amber-50/60 to-orange-50/40 dark:from-orange-950/20 dark:via-zinc-850 dark:to-zinc-900 border border-orange-200/60 dark:border-orange-900/30 shadow-sm">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="size-6 rounded-full bg-orange-500/10 dark:bg-orange-400/20 flex items-center justify-center text-orange-600 dark:text-orange-400 text-xs font-bold">
+                                                                ✨
+                                                            </div>
+                                                            <div>
+                                                                <h4 className="text-xs font-extrabold text-gray-900 dark:text-white uppercase tracking-wider">AI Formative Assistant</h4>
+                                                                <p className="text-[10px] text-gray-500 dark:text-zinc-400">Rubric analysis & constructive feedback</p>
+                                                            </div>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleGenerateAiReview}
+                                                            disabled={isAiGrading || !selectedSubmission.content}
+                                                            className="px-3.5 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 shrink-0 active:scale-95"
+                                                        >
+                                                            {isAiGrading ? (
+                                                                <>
+                                                                    <div className="size-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                                    <span>Analyzing...</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <span>Generate AI Review</span>
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    </div>
+
+                                                    {aiSuggestion && (
+                                                        <div className="mt-3 p-3 bg-white dark:bg-zinc-900 rounded-xl border border-orange-200/80 dark:border-zinc-800 space-y-2 text-xs animate-in fade-in duration-200">
+                                                            <div className="flex items-center justify-between border-b border-gray-100 dark:border-zinc-800 pb-2">
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span className="text-[11px] font-bold text-gray-600 dark:text-zinc-300">Suggested Grade:</span>
+                                                                    <span className="text-orange-600 dark:text-orange-400 font-mono font-bold text-sm bg-orange-50 dark:bg-orange-950/40 px-2 py-0.5 rounded-md">
+                                                                        {aiSuggestion.suggestedGrade}/100
+                                                                    </span>
+                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={handleApplySuggestion}
+                                                                    className="px-2.5 py-1 rounded-lg bg-orange-100 dark:bg-orange-950/50 hover:bg-orange-200 text-orange-700 dark:text-orange-300 text-[11px] font-bold transition-colors flex items-center gap-1"
+                                                                >
+                                                                    <span>Apply to Grade & Feedback</span>
+                                                                    <span className="material-symbols-outlined text-xs">check</span>
+                                                                </button>
+                                                            </div>
+                                                            <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                                                                <strong className="text-gray-900 dark:text-white font-semibold">Strengths: </strong>
+                                                                {aiSuggestion.strengths}
+                                                            </p>
+                                                            <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                                                                <strong className="text-gray-900 dark:text-white font-semibold">Growth Areas: </strong>
+                                                                {aiSuggestion.growthAreas}
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+
                                                 <div className="grid grid-cols-3 gap-4 items-center mb-4">
                                                     <label className="text-xs font-extrabold text-gray-450 dark:text-zinc-400 uppercase tracking-wider">Grade (0-100)</label>
                                                     <input

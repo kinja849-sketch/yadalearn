@@ -20,6 +20,8 @@ import { ScanQRModal } from '@/components/ScanQRModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { removeImageBackground } from '@/utils/imageProcessor';
 import { fetchGeoLocation } from '@/utils/geo';
+import { checkAndAutoCancelExpiredSessions, parseDateTimeHelper } from '@/utils/sessionManager';
+
 
 interface StudentDashboardProps {
   viewAsStudentId?: string;
@@ -109,22 +111,25 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
 
       setAllBookings(bookingsData);
       
-      // Derive active session for instant Join Class button activation
-      const activeBooking = bookingsData.find((b: any) => 
-        (b.status === 'confirmed' || b.status === 'active') && 
-        b.rating == null
-      );
+      // Derive active session for instant Join Class button activation (strictly within 1 hour window)
+      const activeBooking = bookingsData.find((b: any) => {
+        if (b.status !== 'confirmed' && b.status !== 'active') return false;
+        if (b.rating != null) return false;
+        const bTime = parseBookingDateTime(b.date, b.time).getTime();
+        return bTime > 0 && now.getTime() <= bTime + (60 * 60 * 1000);
+      });
+
       if (activeBooking) {
         const tId = activeBooking.teacher?.id || activeBooking.teacher_id;
         if (tId) {
-          setLiveClassInfo(prev => {
-            if (prev) return prev;
-            return {
-              room_id: `class-${tId}-${activeBooking.date}`,
-              teacher_id: tId
-            };
+          setLiveClassInfo({
+            room_id: `class-${tId}-${activeBooking.date}`,
+            teacher_id: tId
           });
         }
+      } else {
+        // If booking expired past 1 hour, clear live class info so link is nullified
+        setLiveClassInfo(null);
       }
       
       const validBookings = bookingsData.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
@@ -141,26 +146,41 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   useEffect(() => {
     // Check for any currently active or scheduled live class created by a teacher
     const fetchLiveClass = async () => {
+      // Auto-cancel any session or booking where start time is older than 1 hour in background (non-blocking)
+      checkAndAutoCancelExpiredSessions({ studentId: currentStudentId }).catch(() => {});
+
+      const now = Date.now();
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+
       // 1. Query live_classes table for active, live, or scheduled sessions
       try {
         const { data } = await supabase
           .from('live_classes')
-          .select('room_id, teacher_id, status, scheduled_at, created_at')
+          .select('id, room_id, teacher_id, status, scheduled_at, created_at')
           .in('status', ['live', 'active', 'scheduled'])
           .order('created_at', { ascending: false });
 
         if (data && data.length > 0) {
-          const active = data.find((c: any) => c.status === 'live' || c.status === 'active');
-          const session = active || data[0];
-          setLiveClassInfo({ room_id: session.room_id, teacher_id: session.teacher_id });
-          return;
+          // Filter strictly for sessions within the 1-hour window that have an active room link
+          const validClasses = data.filter((c: any) => {
+            if (!c.room_id) return false;
+            const schedTime = new Date(c.scheduled_at || c.created_at).getTime();
+            return schedTime > 0 && now <= schedTime + ONE_HOUR_MS;
+          });
+
+          if (validClasses.length > 0) {
+            const active = validClasses.find((c: any) => c.status === 'live' || c.status === 'active');
+            const session = active || validClasses[0];
+            setLiveClassInfo({ room_id: session.room_id, teacher_id: session.teacher_id });
+            return;
+          }
         }
       } catch (err) {
         console.warn("live_classes query error (checking fallbacks):", err);
       }
 
       if (currentStudentId) {
-        // 2. Check student's recent chat messages containing meeting links for active sessions
+        // 2. Check student's recent chat messages containing meeting links for active sessions (within 1 hour)
         try {
           const { data: messages } = await supabase
             .from('chat_messages')
@@ -170,7 +190,12 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
             .limit(20);
 
           if (messages && messages.length > 0) {
-            const sessionMsg = messages.find((m: any) => m.message && m.message.includes('/meeting/'));
+            const sessionMsg = messages.find((m: any) => {
+              if (!m.message || !m.message.includes('/meeting/')) return false;
+              const msgTime = new Date(m.created_at).getTime();
+              return msgTime > 0 && now <= msgTime + ONE_HOUR_MS;
+            });
+
             if (sessionMsg) {
               const match = sessionMsg.message.match(/\/meeting\/([a-zA-Z0-9_-]+)/);
               if (match && match[1]) {
@@ -184,7 +209,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
           console.warn("chat_messages lookup error:", msgErr);
         }
 
-        // 3. Check for any active or confirmed session booking created by teacher
+        // 3. Check for any active or confirmed session booking within 1 hour
         try {
           const { data: recentBookings } = await supabase
             .from('bookings')
@@ -194,10 +219,15 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
             .order('created_at', { ascending: false });
 
           if (recentBookings && recentBookings.length > 0) {
-            const unratedBooking = recentBookings.find((b: any) => b.rating == null);
-            if (unratedBooking) {
-              const roomId = `class-${unratedBooking.teacher_id}-${unratedBooking.date}`;
-              setLiveClassInfo({ room_id: roomId, teacher_id: unratedBooking.teacher_id });
+            const validBooking = recentBookings.find((b: any) => {
+              if (b.rating != null) return false;
+              const bTime = parseDateTimeHelper(b.date, b.time).getTime();
+              return bTime > 0 && now <= bTime + ONE_HOUR_MS;
+            });
+
+            if (validBooking) {
+              const roomId = `class-${validBooking.teacher_id}-${validBooking.date}`;
+              setLiveClassInfo({ room_id: roomId, teacher_id: validBooking.teacher_id });
               return;
             }
           }
@@ -206,7 +236,8 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
         }
       }
 
-      setLiveClassInfo(prev => prev ? prev : null);
+      // If no valid active session within 1 hour, nullify liveClassInfo
+      setLiveClassInfo(null);
     };
 
     fetchLiveClass();
@@ -619,14 +650,17 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   const activeLiveClass = useMemo(() => {
     if (liveClassInfo) return liveClassInfo;
 
-    const d = new Date();
-    const todayStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+    const now = Date.now();
+    const ONE_HOUR_MS = 60 * 60 * 1000;
 
-    // 1. Check allBookings for latest confirmed/active unrated session
-    const activeBooking = allBookings.find((b: any) => 
-      (b.status === 'confirmed' || b.status === 'active') && 
-      b.rating == null
-    );
+    // 1. Check allBookings for latest confirmed/active unrated session (strictly within 1 hour)
+    const activeBooking = allBookings.find((b: any) => {
+      if (b.status !== 'confirmed' && b.status !== 'active') return false;
+      if (b.rating != null) return false;
+      const bTime = parseDateTime(b.date, b.time).getTime();
+      return bTime > 0 && now <= bTime + ONE_HOUR_MS;
+    });
+
     if (activeBooking) {
       const tId = activeBooking.teacher?.id || activeBooking.teacher_id;
       if (tId) {
@@ -638,15 +672,18 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
       }
     }
 
-    // 2. Check nextEvent if it is upcoming or active confirmed and unrated
+    // 2. Check nextEvent if it is upcoming or active confirmed and unrated (strictly within 1 hour)
     if (nextEvent && (nextEvent.status === 'confirmed' || nextEvent.status === 'active') && nextEvent.rating == null) {
-      const tId = nextEvent.teacherId || nextEvent.teacher?.id;
-      if (tId) {
-        return {
-          room_id: `class-${tId}-${nextEvent.date}`,
-          teacher_id: tId,
-          title: nextEvent.title
-        };
+      const nTime = parseDateTime(nextEvent.date, nextEvent.time).getTime();
+      if (nTime > 0 && now <= nTime + ONE_HOUR_MS) {
+        const tId = nextEvent.teacherId || nextEvent.teacher?.id;
+        if (tId) {
+          return {
+            room_id: `class-${tId}-${nextEvent.date}`,
+            teacher_id: tId,
+            title: nextEvent.title
+          };
+        }
       }
     }
 
@@ -1430,7 +1467,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
         </div>
       </main>
 
-      <BottomNav />
+      {activeModal !== 'ai-buddy' && <BottomNav />}
       <TeacherProfileModal
         teacher={selectedTeacher}
         isOpen={isModalOpen}
