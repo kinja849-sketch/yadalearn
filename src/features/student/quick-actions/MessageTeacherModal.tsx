@@ -307,7 +307,7 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
                 // 1. Fetch chatted user IDs from existing chat_messages
                 const chattedUserIds = new Set<string>();
                 try {
-                    const chatHistory = await rawFetch('chat_messages', `or=(sender_id.eq.${userId},receiver_id.eq.${userId})&select=sender_id,receiver_id`);
+                    const chatHistory = await rawFetch('chat_messages', `or=(sender_id.eq.${userId},receiver_id.eq.${userId})&select=sender_id,receiver_id&order=created_at.desc&limit=100`);
                     if (chatHistory && Array.isArray(chatHistory)) {
                         chatHistory.forEach((m: any) => {
                             if (m.sender_id && m.sender_id !== userId) chattedUserIds.add(m.sender_id);
@@ -438,7 +438,7 @@ export const MessageTeacherModal = ({ isOpen, onClose, recipientId, onMessagesRe
         const fetchMessages = async () => {
             setLoadingMessages(true);
             try {
-                const data = await rawFetchGlobal('chat_messages', `or=(and(sender_id.eq.${userId},receiver_id.eq.${selectedPartnerId}),and(sender_id.eq.${selectedPartnerId},receiver_id.eq.${userId}))&order=created_at.asc`);
+                const data = await rawFetchGlobal('chat_messages', `or=(and(sender_id.eq.${userId},receiver_id.eq.${selectedPartnerId}),and(sender_id.eq.${selectedPartnerId},receiver_id.eq.${userId}))&order=created_at.asc&limit=150`);
                 setMessages(data || []);
             } catch (err) {
                 console.error("Error loading chat messages:", err);

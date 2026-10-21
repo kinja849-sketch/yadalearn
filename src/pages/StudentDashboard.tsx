@@ -48,44 +48,31 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
   const [selectedTeacherIdForBooking, setSelectedTeacherIdForBooking] = useState<string | undefined>(undefined);
   const [presenceData, setPresenceData] = useState<Record<string, boolean>>({});
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const { topTeachers, upcomingClasses, unratedClasses, loading } = useDashboardData(viewAsStudentId);
+  const { 
+    topTeachers, 
+    upcomingClasses, 
+    unratedClasses, 
+    loading, 
+    allBookings: hookBookings, 
+    completedCount: hookCompletedCount, 
+    totalCount: hookTotalCount, 
+    refetch: refetchBookings 
+  } = useDashboardData(viewAsStudentId);
   const [liveClassInfo, setLiveClassInfo] = useState<{ room_id: string; teacher_id: string } | null>(null);
   const [allBookings, setAllBookings] = useState<any[]>([]);
   const [completedCount, setCompletedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
 
-  const fetchBookings = useCallback(async () => {
-    if (!currentStudentId) return;
+  const fetchBookings = useCallback(() => {
+    refetchBookings();
+  }, [refetchBookings]);
 
-    // Fetch bookings and submitted teacher ratings in parallel
-    const [bookingsRes, ratingsRes] = await Promise.all([
-      supabase
-        .from('bookings')
-        .select(`
-          id,
-          subject,
-          date,
-          time,
-          status,
-          rating,
-          teacher_id,
-          created_at,
-          teacher:profiles!bookings_teacher_id_fkey(id, full_name, avatar_url)
-        `)
-        .eq('student_id', currentStudentId)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('session_ratings')
-        .select('id, class_id, rated_id, rating, created_at')
-        .eq('rater_id', currentStudentId)
-        .eq('rated_as', 'teacher')
-        .order('created_at', { ascending: false })
-    ]);
+  useEffect(() => {
+    if (hookBookings) {
+      setAllBookings(hookBookings);
+      setCompletedCount(hookCompletedCount);
+      setTotalCount(hookTotalCount);
 
-    const bookingsData = bookingsRes.data;
-    const ratingsData = ratingsRes.data || [];
-    
-    if (bookingsData) {
       const now = new Date();
       const parseBookingDateTime = (dateStr: string, timeStr: string) => {
         try {
@@ -109,10 +96,7 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
         }
       };
 
-      setAllBookings(bookingsData);
-      
-      // Derive active session for instant Join Class button activation (strictly within 1 hour window)
-      const activeBooking = bookingsData.find((b: any) => {
+      const activeBooking = hookBookings.find((b: any) => {
         if (b.status !== 'confirmed' && b.status !== 'active') return false;
         if (b.rating != null) return false;
         const bTime = parseBookingDateTime(b.date, b.time).getTime();
@@ -127,21 +111,9 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
             teacher_id: tId
           });
         }
-      } else {
-        // If booking expired past 1 hour, clear live class info so link is nullified
-        setLiveClassInfo(null);
       }
-      
-      const validBookings = bookingsData.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
-      const completed = validBookings.filter((b: any) => {
-        const bookingTime = parseBookingDateTime(b.date, b.time);
-        return (b.status === 'completed' || b.status === 'attended') && bookingTime <= now;
-      }).length;
-
-      setCompletedCount(completed);
-      setTotalCount(validBookings.length);
     }
-  }, [currentStudentId]);
+  }, [hookBookings, hookCompletedCount, hookTotalCount]);
 
   useEffect(() => {
     // Check for any currently active or scheduled live class created by a teacher
@@ -370,12 +342,14 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
 
     const { data } = await supabase
       .from('chat_messages')
-      .select('*')
+      .select('id, message, sender_id, receiver_id, is_read, created_at, attachment_type')
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false })
+      .limit(100);
 
     if (data) {
-      const filtered = data.filter((m: any) => !deletedSet.has(m.id));
+      const reversedData = [...data].reverse();
+      const filtered = reversedData.filter((m: any) => !deletedSet.has(m.id));
       const mapping: any = {};
       const counts: Record<string, number> = {};
       filtered.forEach((m: any) => {
@@ -593,10 +567,6 @@ const StudentDashboard = ({ viewAsStudentId, onBackToParent }: StudentDashboardP
     }
     return days;
   };
-
-  useEffect(() => {
-    fetchBookings();
-  }, [fetchBookings]);
 
   useEffect(() => {
     async function fetchWeeklyRating() {

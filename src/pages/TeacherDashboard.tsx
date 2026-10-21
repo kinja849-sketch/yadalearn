@@ -343,12 +343,14 @@ const TeacherDashboard = () => {
 
     const { data } = await supabase
       .from('chat_messages')
-      .select('*')
+      .select('id, message, sender_id, receiver_id, is_read, created_at, attachment_type')
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false })
+      .limit(100);
 
     if (data) {
-      const filtered = data.filter((m: any) => !deletedSet.has(m.id));
+      const reversedData = [...data].reverse();
+      const filtered = reversedData.filter((m: any) => !deletedSet.has(m.id));
       const mapping: any = {};
       const counts: Record<string, number> = {};
       filtered.forEach((m: any) => {

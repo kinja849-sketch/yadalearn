@@ -22,7 +22,13 @@ export function useDashboardData(studentId?: string) {
         }
     });
     const [unratedClasses, setUnratedClasses] = useState<any[]>([]);
+    const [allBookings, setAllBookings] = useState<any[]>([]);
+    const [completedCount, setCompletedCount] = useState<number>(0);
+    const [totalCount, setTotalCount] = useState<number>(0);
     const [loading, setLoading] = useState(true);
+    const [fetchTrigger, setFetchTrigger] = useState(0);
+
+    const refetch = () => setFetchTrigger(prev => prev + 1);
 
     useEffect(() => {
         async function fetchData() {
@@ -48,9 +54,12 @@ export function useDashboardData(studentId?: string) {
                         rating,
                         status,
                         teacher_id,
+                        created_at,
                         teacher:profiles!bookings_teacher_id_fkey(id, full_name, avatar_url)
                     `)
-                    .eq('student_id', userId);
+                    .eq('student_id', userId)
+                    .order('created_at', { ascending: false })
+                    .limit(50);
 
                 const [profileRes, bookingsRes] = await Promise.all([profilePromise, bookingsPromise]);
 
@@ -59,6 +68,7 @@ export function useDashboardData(studentId?: string) {
                 }
 
                 const allBookings = bookingsRes.data || [];
+                setAllBookings(allBookings);
                 
                 // Process upcoming and unrated classes
                 const now = new Date();
@@ -113,6 +123,15 @@ export function useDashboardData(studentId?: string) {
                         }
                     }
                 }
+
+                const validBookings = allBookings.filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected');
+                const completed = validBookings.filter((b: any) => {
+                    const bookingTime = parseBookingDateTime(b.date, b.time);
+                    return (b.status === 'completed' || b.status === 'attended') && bookingTime <= now;
+                }).length;
+
+                setCompletedCount(completed);
+                setTotalCount(validBookings.length);
 
                 setUpcomingClasses(upcoming);
                 localStorage.setItem('yadalearn-cached-classes', JSON.stringify(upcoming));
@@ -181,7 +200,7 @@ export function useDashboardData(studentId?: string) {
         }
 
         fetchData();
-    }, [userId, studentSubjects]);
+    }, [userId, studentSubjects, fetchTrigger]);
 
-    return { upcomingClasses, topTeachers, unratedClasses, loading };
+    return { upcomingClasses, topTeachers, unratedClasses, allBookings, completedCount, totalCount, loading, refetch };
 }

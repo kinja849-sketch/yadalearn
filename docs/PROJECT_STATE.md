@@ -2,7 +2,7 @@
 
 > Living snapshot for AI agents and humans. Update after every meaningful completed task. Always verify against the repository — do not trust this file alone.
 
-**Last updated:** 2026-10-21 (Phase 11: Real-Time Bidirectional Gemini Live API Voice Architecture & Conversational Intelligence)
+**Last updated:** 2026-10-21 (Phase 12: Supabase Performance Optimization & Statement Timeout Elimination)
 
 ## Product snapshot
 
@@ -19,12 +19,25 @@
 - Meeting page (Stream) + waiting room via Supabase Realtime
 - Quick-action modals under `src/features/*`
 - Design system: lavender/pastel tokens in `src/index.css` + Tailwind config
-- Schema SQL files at repo root (base, update, parent, ai)
+- Schema SQL files at repo root (base, update, parent, ai, perf_indexes)
 - Student AI Socratic Study Buddy & Cognitive Mentor (`/api/gemini-live-ws`, `/api/student-ai`, `/api/tts`, `useStudentAI`, `LiveAudioStreamer`, `VoiceOrb`, `audioAnalyzer.ts`, `AIStudyBuddyModal.tsx`, `AIFeatures.tsx`)
 - Teacher AI Co-Pilot, Formative Grading Assistant & Lesson Planner (`/api/teacher-ai`, `useTeacherAI`)
 - Session lifecycle & auto-cancellation manager (`src/utils/sessionManager.ts`)
 
 ## Recent Completed Work
+
+- **Phase 12: Supabase Performance Optimization & Statement Timeout (57014 / 500) Elimination** (`supabase_perf_indexes.sql`, `src/hooks/useDashboardData.ts`, `src/pages/StudentDashboard.tsx`, `src/pages/TeacherDashboard.tsx`, `src/features/student/quick-actions/MessageTeacherModal.tsx`):
+  - **Database Indexing Migration (`supabase_perf_indexes.sql`)**:
+    - Created composite B-Tree indexes for `bookings(student_id, created_at DESC)`, `bookings(teacher_id, created_at DESC)`, and status filters.
+    - Created composite B-Tree indexes for `chat_messages(sender_id, created_at DESC)`, `chat_messages(receiver_id, created_at DESC)`, and conversation lookup.
+    - Added indexes for `session_ratings(rater_id, rated_as, created_at DESC)` and `live_classes(status, created_at DESC)`.
+  - **Client-Side Query Deduplication & Consolidation**:
+    - Updated `src/hooks/useDashboardData.ts` to be the single source of truth for dashboard bookings, with `.order('created_at', { ascending: false }).limit(50)`, exporting `allBookings`, `completedCount`, `totalCount`, and a manual `refetch` trigger.
+    - Eliminated redundant concurrent bookings queries and mount effects in `src/pages/StudentDashboard.tsx`.
+  - **Chat Message Bounded Queries**:
+    - Replaced unbounded `select('*')` full-table scans in `StudentDashboard.tsx` and `TeacherDashboard.tsx` with explicit column projections (`id, message, sender_id, receiver_id, is_read, created_at, attachment_type`) and `.order('created_at', { ascending: false }).limit(100)`.
+    - Added safe limits (`limit=100`, `limit=150`) to chat queries in `MessageTeacherModal.tsx`.
+  - **Verification**: `npx tsc --noEmit` passed with 0 errors.
 
 - **Phase 11: Google Gemini Multimodal Live API Voice Architecture & Conversational Intelligence** (`vite.config.ts`, `src/utils/liveAudioStreamer.ts`, `src/utils/audioAnalyzer.ts`, `src/hooks/useStudentAI.ts`, `src/types/ai.ts`, `src/features/student/quick-actions/AIStudyBuddyModal.tsx`, `supabase_schema_ai.sql`):
   - **Replaced Sequential STT → LLM → TTS with Native Gemini Live API (`models/gemini-2.5-flash-native-audio-latest`)**:
